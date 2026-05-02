@@ -44,7 +44,7 @@ class BrowserManager {
                 color: '#f97316'
             },
             mimo: {
-                url: 'https://aistudio.xiaomimimo.com/',
+                url: 'https://aistudio.xiaomimimo.com/#/c',
                 partition: 'persist:mimo',
                 color: '#2563eb'
             },
@@ -563,14 +563,26 @@ class BrowserManager {
     }
 
     async navigate(provider, url) {
+        const tryLoad = async (wc, targetUrl) => {
+            try {
+                await wc.loadURL(targetUrl);
+            } catch (e) {
+                const msg = String(e && e.message ? e.message : e);
+                if (msg.includes('(-3) loading')) {
+                    return;
+                }
+                throw e;
+            }
+        };
+
         const webContents = this.getWebContents(provider);
         if (!webContents) {
             this.createView(provider);
             const newWebContents = this.getWebContents(provider);
-            if (newWebContents) await newWebContents.loadURL(url);
+            if (newWebContents) await tryLoad(newWebContents, url);
             return;
         }
-        await webContents.loadURL(url);
+        await tryLoad(webContents, url);
     }
 
     async reload(provider) {

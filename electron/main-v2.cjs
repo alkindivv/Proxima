@@ -1221,27 +1221,85 @@ async function sendToModernProvider(webContents, provider, message) {
 
     await sleep(500);
 
-    const inputFound = await webContents.executeJavaScript(`
-        (function() {
-            const selectors = [
-                'textarea',
-                '[contenteditable="true"]',
-                '.ql-editor',
-                'rich-textarea .ql-editor',
-                'rich-textarea [contenteditable="true"]',
-                'input[type="text"]'
-            ];
-            for (const selector of selectors) {
-                const input = document.querySelector(selector);
-                if (input && input.offsetParent !== null) {
-                    input.focus();
-                    input.click();
-                    return { found: true, selector };
+    if (provider === 'qwen') {
+        const qwenReady = await webContents.executeJavaScript(`
+            (function() {
+                const input = document.querySelector('textarea.message-input-textarea, textarea');
+                if (!input || input.offsetParent === null) return { found: false };
+                input.focus();
+                input.click();
+                input.value = '';
+                input.dispatchEvent(new Event('input', { bubbles: true }));
+                return { found: true };
+            })()
+        `).catch(() => ({ found: false }));
+
+        if (!qwenReady.found) {
+            return { sent: false, error: 'No Qwen input field found' };
+        }
+
+        await sleep(250);
+
+        try {
+            if (typeof webContents.insertText === 'function') {
+                await webContents.insertText(message);
+            } else {
+                for (const ch of message) {
+                    await webContents.sendInputEvent({ type: 'char', keyCode: ch });
                 }
             }
-            return { found: false };
-        })()
-    `);
+        } catch (e) {
+            return { sent: false, error: `Failed typing into Qwen: ${e.message}` };
+        }
+
+        await sleep(400);
+
+        const qwenClicked = await webContents.executeJavaScript(`
+            (function() {
+                const btn = document.querySelector('button.send-button');
+                if (btn && !btn.disabled && (btn.offsetParent !== null || btn.getClientRects().length > 0)) {
+                    btn.click();
+                    return { clicked: true };
+                }
+                return { clicked: false };
+            })()
+        `).catch(() => ({ clicked: false }));
+
+        if (!qwenClicked.clicked) {
+            await webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Enter' });
+            await webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Enter' });
+        }
+
+        return { sent: true };
+    }
+
+    let inputFound = { found: false };
+    for (let attempt = 0; attempt < 8; attempt++) {
+        inputFound = await webContents.executeJavaScript(`
+            (function() {
+                const selectors = [
+                    'textarea',
+                    '[contenteditable="true"]',
+                    '.ql-editor',
+                    'rich-textarea .ql-editor',
+                    'rich-textarea [contenteditable="true"]',
+                    'input[type="text"]'
+                ];
+                for (const selector of selectors) {
+                    const input = document.querySelector(selector);
+                    if (input && input.offsetParent !== null) {
+                        input.focus();
+                        input.click();
+                        return { found: true, selector };
+                    }
+                }
+                return { found: false };
+            })()
+        `).catch(() => ({ found: false }));
+
+        if (inputFound.found) break;
+        await sleep(750);
+    }
 
     if (!inputFound.found) {
         return { sent: false, error: 'No input field found' };
@@ -2453,10 +2511,13 @@ async function startNewConversation(provider) {
         }
     }
 
-    // Navigate to provider home page to start fresh UI
+    // Navigate to provider home/chat page to start fresh UI
     const config = browserManager.providers[provider];
     if (config) {
         await browserManager.navigate(provider, config.url);
+        if (provider === 'mimo') {
+            await sleep(4000);
+        }
     }
 }
 
