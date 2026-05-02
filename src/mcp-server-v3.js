@@ -411,7 +411,7 @@ class SmartRouter {
 
     async smartQuery(message, preferredProvider = null) {
         const enabled = getEnabledProviders();
-        const order = ['chatgpt', 'claude', 'perplexity', 'gemini'];
+        const order = ['chatgpt', 'claude', 'perplexity', 'gemini', 'kimi', 'minimax', 'mimo'];
 
         // Start with preferred if enabled
         if (preferredProvider && enabled.has(preferredProvider)) {
@@ -462,8 +462,11 @@ const perplexity = new AIProvider('perplexity', ipcClient);
 const chatgpt = new AIProvider('chatgpt', ipcClient);
 const claude = new AIProvider('claude', ipcClient);
 const gemini = new AIProvider('gemini', ipcClient);
+const kimi = new AIProvider('kimi', ipcClient);
+const minimax = new AIProvider('minimax', ipcClient);
+const mimo = new AIProvider('mimo', ipcClient);
 
-const router = new SmartRouter({ perplexity, chatgpt, claude, gemini });
+const router = new SmartRouter({ perplexity, chatgpt, claude, gemini, kimi, minimax, mimo });
 
 // Create MCP Server
 const server = new McpServer({
@@ -551,7 +554,7 @@ server.tool(
     {
         query: z.string().describe('Search query or research question'),
         files: z.array(z.string()).optional().describe('Optional: file paths to include as context. Supports line ranges like "path/file.js:10-50". For large files, always specify relevant line ranges only.'),
-        provider: z.string().optional().describe('AI provider to use: chatgpt, claude, gemini, perplexity. Default: auto-select best available')
+        provider: z.string().optional().describe('AI provider to use: chatgpt, claude, gemini, perplexity, kimi, minimax, mimo. Default: auto-select best available')
     },
     async ({ query, files, provider: providerName }) => {
         const p = resolveProvider(providerName, 'research');
@@ -570,7 +573,7 @@ server.tool(
     'internet_search',
     {
         query: z.string().describe('Search query to look up on the internet'),
-        provider: z.string().optional().describe('AI provider to use: chatgpt, claude, gemini, perplexity. Default: auto-select')
+        provider: z.string().optional().describe('AI provider to use: chatgpt, claude, gemini, perplexity, kimi, minimax, mimo. Default: auto-select')
     },
     async ({ query, provider: providerName }) => {
         const p = resolveProvider(providerName, 'research');
@@ -587,7 +590,7 @@ server.tool(
     'reddit_search',
     {
         query: z.string().describe('What to search for on Reddit'),
-        provider: z.string().optional().describe('AI provider to use: chatgpt, claude, gemini, perplexity. Default: auto-select')
+        provider: z.string().optional().describe('AI provider to use: chatgpt, claude, gemini, perplexity, kimi, minimax, mimo. Default: auto-select')
     },
     async ({ query, provider: providerName }) => {
         const p = resolveProvider(providerName, 'research');
@@ -605,7 +608,7 @@ server.tool(
     {
         query: z.string().describe('What to search for on GitHub — repos, code, libraries, or solutions'),
         language: z.string().optional().describe('Programming language filter (e.g., JavaScript, Python, Rust)'),
-        provider: z.string().optional().describe('AI provider to use: chatgpt, claude, gemini, perplexity. Default: auto-select')
+        provider: z.string().optional().describe('AI provider to use: chatgpt, claude, gemini, perplexity, kimi, minimax, mimo. Default: auto-select')
     },
     async ({ query, language, provider: providerName }) => {
         const p = resolveProvider(providerName, 'research');
@@ -626,7 +629,7 @@ server.tool(
         code: z.string().optional().describe('Optional: existing code to analyze and apply design improvements on'),
         files: z.array(z.string()).optional().describe('Optional: file paths of existing code to improve with better UI/UX. Supports line ranges like "path/file.js:10-50"'),
         style: z.string().optional().describe('Design style preference: modern, minimal, glassmorphism, dark, corporate, playful, etc.'),
-        provider: z.string().optional().describe('AI provider to use: chatgpt, claude, gemini, perplexity. Default: auto-select best for coding')
+        provider: z.string().optional().describe('AI provider to use: chatgpt, claude, gemini, perplexity, kimi, minimax, mimo. Default: auto-select best for coding')
     },
     async ({ description, code, files, style, provider: providerName }) => {
         try {
@@ -688,7 +691,7 @@ server.tool(
     {
         query: z.string().describe('News topic to search'),
         timeframe: z.string().optional().describe('Timeframe like "today", "this week", "2024"'),
-        provider: z.string().optional().describe('AI provider to use: chatgpt, claude, gemini, perplexity. Default: auto-select')
+        provider: z.string().optional().describe('AI provider to use: chatgpt, claude, gemini, perplexity, kimi, minimax, mimo. Default: auto-select')
     },
     async ({ query, timeframe, provider: providerName }) => {
         const p = resolveProvider(providerName, 'research');
@@ -707,7 +710,7 @@ server.tool(
     'math_search',
     {
         query: z.string().describe('Math problem or scientific question'),
-        provider: z.string().optional().describe('AI provider to use: chatgpt, claude, gemini, perplexity. Default: auto-select')
+        provider: z.string().optional().describe('AI provider to use: chatgpt, claude, gemini, perplexity, kimi, minimax, mimo. Default: auto-select')
     },
     async ({ query, provider: providerName }) => {
         const p = resolveProvider(providerName, 'research');
@@ -724,7 +727,7 @@ server.tool(
     'academic_search',
     {
         query: z.string().describe('Academic/research query'),
-        provider: z.string().optional().describe('AI provider to use: chatgpt, claude, gemini, perplexity. Default: auto-select')
+        provider: z.string().optional().describe('AI provider to use: chatgpt, claude, gemini, perplexity, kimi, minimax, mimo. Default: auto-select')
     },
     async ({ query, provider: providerName }) => {
         const p = resolveProvider(providerName, 'research');
@@ -744,7 +747,7 @@ server.tool(
     {
         purpose: z.string().describe('Description of what the code should do'),
         code: z.string().optional().describe('Optional code snippet to verify'),
-        provider: z.string().optional().describe('AI provider to use: chatgpt, claude, gemini, perplexity. Default: auto-select best for coding')
+        provider: z.string().optional().describe('AI provider to use: chatgpt, claude, gemini, perplexity, kimi, minimax, mimo. Default: auto-select best for coding')
     },
     async ({ purpose, code, provider: providerName }) => {
         try {
@@ -768,7 +771,7 @@ server.tool(
         code: z.string().optional().describe('The code snippet to explain (or use files parameter)'),
         language: z.string().optional().describe('Programming language'),
         files: z.array(z.string()).optional().describe('Optional: Array of file paths containing code to explain'),
-        provider: z.string().optional().describe('AI provider to use: chatgpt, claude, gemini, perplexity. Default: auto-select best for coding')
+        provider: z.string().optional().describe('AI provider to use: chatgpt, claude, gemini, perplexity, kimi, minimax, mimo. Default: auto-select best for coding')
     },
     async ({ code, language, files, provider: providerName }) => {
         try {
@@ -792,7 +795,7 @@ server.tool(
     {
         description: z.string().describe('What the code should do'),
         language: z.string().optional().describe('Programming language (default: JavaScript)'),
-        provider: z.string().optional().describe('AI provider to use: chatgpt, claude, gemini, perplexity. Default: auto-select best for coding')
+        provider: z.string().optional().describe('AI provider to use: chatgpt, claude, gemini, perplexity, kimi, minimax, mimo. Default: auto-select best for coding')
     },
     async ({ description, language, provider: providerName }) => {
         try {
@@ -816,7 +819,7 @@ server.tool(
         code: z.string().optional().describe('Code to optimize (or use files parameter)'),
         goal: z.string().optional().describe('Optimization goal'),
         files: z.array(z.string()).optional().describe('Optional: Array of file paths containing code to optimize'),
-        provider: z.string().optional().describe('AI provider to use: chatgpt, claude, gemini, perplexity. Default: auto-select best for coding')
+        provider: z.string().optional().describe('AI provider to use: chatgpt, claude, gemini, perplexity, kimi, minimax, mimo. Default: auto-select best for coding')
     },
     async ({ code, goal, files, provider: providerName }) => {
         try {
@@ -841,7 +844,7 @@ server.tool(
         code: z.string().optional().describe('Code to review (or use files parameter)'),
         context: z.string().optional().describe('Context about the code'),
         files: z.array(z.string()).optional().describe('Optional: Array of file paths containing code to review'),
-        provider: z.string().optional().describe('AI provider to use: chatgpt, claude, gemini, perplexity. Default: auto-select best for coding')
+        provider: z.string().optional().describe('AI provider to use: chatgpt, claude, gemini, perplexity, kimi, minimax, mimo. Default: auto-select best for coding')
     },
     async ({ code, context, files, provider: providerName }) => {
         try {
@@ -869,7 +872,7 @@ server.tool(
     {
         url: z.string().describe('The URL to summarize'),
         focus: z.string().optional().describe('Focus area'),
-        provider: z.string().optional().describe('AI provider to use: chatgpt, claude, gemini, perplexity. Default: auto-select')
+        provider: z.string().optional().describe('AI provider to use: chatgpt, claude, gemini, perplexity, kimi, minimax, mimo. Default: auto-select')
     },
     async ({ url, focus, provider: providerName }) => {
         const p = resolveProvider(providerName, 'research');
@@ -888,7 +891,7 @@ server.tool(
     {
         topic: z.string().describe('Topic to write about'),
         style: z.string().optional().describe('Writing style'),
-        provider: z.string().optional().describe('AI provider to use: chatgpt, claude, gemini, perplexity. Default: auto-select')
+        provider: z.string().optional().describe('AI provider to use: chatgpt, claude, gemini, perplexity, kimi, minimax, mimo. Default: auto-select')
     },
     async ({ topic, style, provider: providerName }) => {
         const p = resolveProvider(providerName, 'research');
@@ -906,7 +909,7 @@ server.tool(
     'brainstorm',
     {
         topic: z.string().describe('Topic to brainstorm ideas for'),
-        provider: z.string().optional().describe('AI provider to use: chatgpt, claude, gemini, perplexity. Default: auto-select')
+        provider: z.string().optional().describe('AI provider to use: chatgpt, claude, gemini, perplexity, kimi, minimax, mimo. Default: auto-select')
     },
     async ({ topic, provider: providerName }) => {
         const p = resolveProvider(providerName, 'research');
@@ -924,7 +927,7 @@ server.tool(
     {
         url: z.string().describe('URL of the document'),
         question: z.string().optional().describe('Specific question'),
-        provider: z.string().optional().describe('AI provider to use: chatgpt, claude, gemini, perplexity. Default: auto-select')
+        provider: z.string().optional().describe('AI provider to use: chatgpt, claude, gemini, perplexity, kimi, minimax, mimo. Default: auto-select')
     },
     async ({ url, question, provider: providerName }) => {
         const p = resolveProvider(providerName, 'research');
@@ -944,7 +947,7 @@ server.tool(
     {
         content: z.string().describe('Text or URL to extract data from'),
         dataType: z.string().describe('What data to extract'),
-        provider: z.string().optional().describe('AI provider to use: chatgpt, claude, gemini, perplexity. Default: auto-select')
+        provider: z.string().optional().describe('AI provider to use: chatgpt, claude, gemini, perplexity, kimi, minimax, mimo. Default: auto-select')
     },
     async ({ content, dataType, provider: providerName }) => {
         const p = resolveProvider(providerName, 'research');
@@ -962,7 +965,7 @@ server.tool(
     {
         request: z.string().describe('What writing help you need'),
         content: z.string().optional().describe('Content to improve'),
-        provider: z.string().optional().describe('AI provider to use: chatgpt, claude, gemini, perplexity. Default: auto-select')
+        provider: z.string().optional().describe('AI provider to use: chatgpt, claude, gemini, perplexity, kimi, minimax, mimo. Default: auto-select')
     },
     async ({ request, content, provider: providerName }) => {
         const p = resolveProvider(providerName, 'general');
@@ -985,7 +988,7 @@ server.tool(
     'fact_check',
     {
         claim: z.string().describe('The claim to verify'),
-        provider: z.string().optional().describe('AI provider to use: chatgpt, claude, gemini, perplexity. Default: auto-select')
+        provider: z.string().optional().describe('AI provider to use: chatgpt, claude, gemini, perplexity, kimi, minimax, mimo. Default: auto-select')
     },
     async ({ claim, provider: providerName }) => {
         const p = resolveProvider(providerName, 'research');
@@ -1003,7 +1006,7 @@ server.tool(
     {
         topic: z.string().describe('Topic to find statistics about'),
         year: z.string().optional().describe('Specific year'),
-        provider: z.string().optional().describe('AI provider to use: chatgpt, claude, gemini, perplexity. Default: auto-select')
+        provider: z.string().optional().describe('AI provider to use: chatgpt, claude, gemini, perplexity, kimi, minimax, mimo. Default: auto-select')
     },
     async ({ topic, year, provider: providerName }) => {
         const p = resolveProvider(providerName, 'research');
@@ -1023,7 +1026,7 @@ server.tool(
         item1: z.string().describe('First item to compare'),
         item2: z.string().describe('Second item to compare'),
         context: z.string().optional().describe('Context for comparison'),
-        provider: z.string().optional().describe('AI provider to use: chatgpt, claude, gemini, perplexity. Default: auto-select')
+        provider: z.string().optional().describe('AI provider to use: chatgpt, claude, gemini, perplexity, kimi, minimax, mimo. Default: auto-select')
     },
     async ({ item1, item2, context, provider: providerName }) => {
         const p = resolveProvider(providerName, 'research');
@@ -1041,7 +1044,7 @@ server.tool(
     'how_to',
     {
         task: z.string().describe('What to learn how to do'),
-        provider: z.string().optional().describe('AI provider to use: chatgpt, claude, gemini, perplexity. Default: auto-select')
+        provider: z.string().optional().describe('AI provider to use: chatgpt, claude, gemini, perplexity, kimi, minimax, mimo. Default: auto-select')
     },
     async ({ task, provider: providerName }) => {
         const p = resolveProvider(providerName, 'research');
@@ -1104,6 +1107,60 @@ server.tool(
         try {
             const fullMessage = buildMessageWithFiles(message, files);
             return toolResponse(await gemini.chat(fullMessage));
+        } catch (err) {
+            return toolError(err);
+        }
+    }
+);
+
+server.tool(
+    'ask_kimi',
+    {
+        message: z.string().describe('Message to send to Kimi'),
+        files: z.array(z.string()).optional().describe('Optional: file paths to include as context. Supports line ranges like "path/file.js:10-50". For large files, always specify relevant line ranges only.')
+    },
+    async ({ message, files }) => {
+        const disabled = checkDisabled('kimi');
+        if (disabled) return disabled;
+        try {
+            const fullMessage = buildMessageWithFiles(message, files);
+            return toolResponse(await kimi.chat(fullMessage));
+        } catch (err) {
+            return toolError(err);
+        }
+    }
+);
+
+server.tool(
+    'ask_minimax',
+    {
+        message: z.string().describe('Message to send to MiniMax'),
+        files: z.array(z.string()).optional().describe('Optional: file paths to include as context. Supports line ranges like "path/file.js:10-50". For large files, always specify relevant line ranges only.')
+    },
+    async ({ message, files }) => {
+        const disabled = checkDisabled('minimax');
+        if (disabled) return disabled;
+        try {
+            const fullMessage = buildMessageWithFiles(message, files);
+            return toolResponse(await minimax.chat(fullMessage));
+        } catch (err) {
+            return toolError(err);
+        }
+    }
+);
+
+server.tool(
+    'ask_mimo',
+    {
+        message: z.string().describe('Message to send to MiMo'),
+        files: z.array(z.string()).optional().describe('Optional: file paths to include as context. Supports line ranges like "path/file.js:10-50". For large files, always specify relevant line ranges only.')
+    },
+    async ({ message, files }) => {
+        const disabled = checkDisabled('mimo');
+        if (disabled) return disabled;
+        try {
+            const fullMessage = buildMessageWithFiles(message, files);
+            return toolResponse(await mimo.chat(fullMessage));
         } catch (err) {
             return toolError(err);
         }
@@ -1188,6 +1245,48 @@ server.tool(
                     })()
                 );
             }
+            if (enabled.has('kimi')) {
+                const delay = providerIndex++ * STAGGER_MS;
+                names.push('kimi');
+                tasks.push(
+                    (async () => {
+                        if (delay > 0) await staggerDelay(delay);
+                        try {
+                            return await kimi.chat(fullMessage);
+                        } catch (e) {
+                            return { error: e.message };
+                        }
+                    })()
+                );
+            }
+            if (enabled.has('minimax')) {
+                const delay = providerIndex++ * STAGGER_MS;
+                names.push('minimax');
+                tasks.push(
+                    (async () => {
+                        if (delay > 0) await staggerDelay(delay);
+                        try {
+                            return await minimax.chat(fullMessage);
+                        } catch (e) {
+                            return { error: e.message };
+                        }
+                    })()
+                );
+            }
+            if (enabled.has('mimo')) {
+                const delay = providerIndex++ * STAGGER_MS;
+                names.push('mimo');
+                tasks.push(
+                    (async () => {
+                        if (delay > 0) await staggerDelay(delay);
+                        try {
+                            return await mimo.chat(fullMessage);
+                        } catch (e) {
+                            return { error: e.message };
+                        }
+                    })()
+                );
+            }
 
             // Wait for ALL to complete - typing detection is handled inside chat()
             console.error('[ask_all_ais] Waiting for all providers to complete...');
@@ -1227,7 +1326,7 @@ server.tool(
     async ({ question, providers, files }) => {
         try {
             const enabled = getEnabledProviders();
-            const requested = providers || ['perplexity', 'chatgpt', 'claude', 'gemini'];
+            const requested = providers || ['perplexity', 'chatgpt', 'claude', 'gemini', 'kimi', 'minimax', 'mimo'];
             const useProviders = requested.filter(p => enabled.has(p));
             const fullQuestion = buildMessageWithFiles(question, files);
 
@@ -1241,6 +1340,9 @@ server.tool(
             if (useProviders.includes('chatgpt')) { const d = idx++ * STAGGER_MS; tasks.push((async () => { if (d > 0) await staggerDelay(d); try { results.chatgpt = await chatgpt.chat(fullQuestion); } catch(e) { results.chatgpt = { error: e.message }; } })()); }
             if (useProviders.includes('claude')) { const d = idx++ * STAGGER_MS; tasks.push((async () => { if (d > 0) await staggerDelay(d); try { results.claude = await claude.chat(fullQuestion); } catch(e) { results.claude = { error: e.message }; } })()); }
             if (useProviders.includes('gemini')) { const d = idx++ * STAGGER_MS; tasks.push((async () => { if (d > 0) await staggerDelay(d); try { results.gemini = await gemini.chat(fullQuestion); } catch(e) { results.gemini = { error: e.message }; } })()); }
+            if (useProviders.includes('kimi')) { const d = idx++ * STAGGER_MS; tasks.push((async () => { if (d > 0) await staggerDelay(d); try { results.kimi = await kimi.chat(fullQuestion); } catch(e) { results.kimi = { error: e.message }; } })()); }
+            if (useProviders.includes('minimax')) { const d = idx++ * STAGGER_MS; tasks.push((async () => { if (d > 0) await staggerDelay(d); try { results.minimax = await minimax.chat(fullQuestion); } catch(e) { results.minimax = { error: e.message }; } })()); }
+            if (useProviders.includes('mimo')) { const d = idx++ * STAGGER_MS; tasks.push((async () => { if (d > 0) await staggerDelay(d); try { results.mimo = await mimo.chat(fullQuestion); } catch(e) { results.mimo = { error: e.message }; } })()); }
 
             await Promise.all(tasks);
 
@@ -1317,9 +1419,9 @@ server.tool(
     async () => {
         try {
             const enabled = getEnabledProviders();
-            for (const provider of ['perplexity', 'chatgpt', 'claude', 'gemini']) {
+            for (const provider of ['perplexity', 'chatgpt', 'claude', 'gemini', 'kimi', 'minimax', 'mimo']) {
                 if (enabled.has(provider)) {
-                    await { perplexity, chatgpt, claude, gemini }[provider].newConversation();
+                    await { perplexity, chatgpt, claude, gemini, kimi, minimax, mimo }[provider].newConversation();
                 }
             }
             return toolResponse({ success: true, message: 'Started new conversations' });
@@ -1335,14 +1437,14 @@ server.tool(
     'chain_query',
     {
         steps: z.array(z.object({
-            provider: z.string().describe('AI provider: chatgpt, claude, gemini, perplexity'),
+            provider: z.string().describe('AI provider: chatgpt, claude, gemini, perplexity, kimi, minimax, mimo'),
             prompt: z.string().describe('Prompt for this step. Use {previous} to inject previous step output.')
         })).describe('Array of pipeline steps. Each step receives previous output via {previous} placeholder.'),
         initialContext: z.string().optional().describe('Optional initial context to pass as {previous} to first step')
     },
     async ({ steps, initialContext }) => {
         try {
-            const providers = { perplexity, chatgpt, claude, gemini };
+            const providers = { perplexity, chatgpt, claude, gemini, kimi, minimax, mimo };
             const results = [];
             let previousOutput = initialContext || '';
 
@@ -1397,14 +1499,14 @@ server.tool(
 // --- Smart Provider Selection Helper ---
 function pickBestProvider(taskType) {
     const enabled = getEnabledProviders();
-    const providers = { perplexity, chatgpt, claude, gemini };
+    const providers = { perplexity, chatgpt, claude, gemini, kimi, minimax, mimo };
     
     // Priority order based on task type
     const priorities = {
-        coding: ['claude', 'chatgpt', 'gemini', 'perplexity'],
-        research: ['perplexity', 'gemini', 'chatgpt', 'claude'],
-        general: ['claude', 'chatgpt', 'gemini', 'perplexity'],
-        review: ['claude', 'chatgpt', 'gemini', 'perplexity']
+        coding: ['claude', 'chatgpt', 'gemini', 'perplexity', 'kimi', 'minimax', 'mimo'],
+        research: ['perplexity', 'gemini', 'chatgpt', 'claude', 'kimi', 'minimax', 'mimo'],
+        general: ['claude', 'chatgpt', 'gemini', 'perplexity', 'kimi', 'minimax', 'mimo'],
+        review: ['claude', 'chatgpt', 'gemini', 'perplexity', 'kimi', 'minimax', 'mimo']
     };
     
     const order = priorities[taskType] || priorities.general;
@@ -1418,7 +1520,7 @@ function pickBestProvider(taskType) {
 
 // --- Dynamic Provider Resolution ---
 function resolveProvider(providerName, taskType) {
-    const providers = { perplexity, chatgpt, claude, gemini };
+    const providers = { perplexity, chatgpt, claude, gemini, kimi, minimax, mimo };
     
     if (providerName) {
         const name = providerName.toLowerCase();
@@ -1440,7 +1542,7 @@ server.tool(
         task: z.string().describe('What to solve — coding task, bug, feature, anything'),
         files: z.array(z.string()).optional().describe('Optional: file paths for context'),
         language: z.string().optional().describe('Programming language if relevant'),
-        provider: z.string().optional().describe('AI provider to use: chatgpt, claude, gemini, perplexity. Default: auto-select best for coding')
+        provider: z.string().optional().describe('AI provider to use: chatgpt, claude, gemini, perplexity, kimi, minimax, mimo. Default: auto-select best for coding')
     },
     async ({ task, files, language, provider: providerName }) => {
         try {
@@ -1487,7 +1589,7 @@ server.tool(
     async ({ topic, sides }) => {
         try {
             const enabled = getEnabledProviders();
-            const allProviders = { perplexity, chatgpt, claude, gemini };
+            const allProviders = { perplexity, chatgpt, claude, gemini, kimi, minimax, mimo };
             const numSides = Math.min(sides || 2, enabled.size);
 
             if (enabled.size < 2) {
@@ -1533,7 +1635,7 @@ server.tool(
         code: z.string().optional().describe('Code to audit for security vulnerabilities'),
         files: z.array(z.string()).optional().describe('Optional: file paths to audit'),
         language: z.string().optional().describe('Programming language'),
-        provider: z.string().optional().describe('AI provider to use: chatgpt, claude, gemini, perplexity. Default: auto-select best for coding')
+        provider: z.string().optional().describe('AI provider to use: chatgpt, claude, gemini, perplexity, kimi, minimax, mimo. Default: auto-select best for coding')
     },
     async ({ code, files, language, provider: providerName }) => {
         try {
@@ -1587,7 +1689,7 @@ server.tool(
     async ({ question, providers: requestedProviders }) => {
         try {
             const enabled = getEnabledProviders();
-            const allProviders = { perplexity, chatgpt, claude, gemini };
+            const allProviders = { perplexity, chatgpt, claude, gemini, kimi, minimax, mimo };
             
             // Determine which providers to use
             let targetProviders = requestedProviders 
@@ -1644,7 +1746,7 @@ server.tool(
         error: z.string().describe('Error message or stack trace'),
         file: z.string().optional().describe('File path where the error occurs'),
         context: z.string().optional().describe('Additional context about what you were doing'),
-        provider: z.string().optional().describe('AI provider to use: chatgpt, claude, gemini, perplexity. Default: auto-select best for coding')
+        provider: z.string().optional().describe('AI provider to use: chatgpt, claude, gemini, perplexity, kimi, minimax, mimo. Default: auto-select best for coding')
     },
     async ({ error, file, context: ctx, provider: providerName }) => {
         try {
@@ -1687,7 +1789,7 @@ server.tool(
         description: z.string().describe('What you want to build'),
         constraints: z.string().optional().describe('Tech constraints (e.g., "must use Next.js, PostgreSQL")'),
         scale: z.string().optional().describe('Expected scale (e.g., "10k users", "enterprise")'),
-        provider: z.string().optional().describe('AI provider to use: chatgpt, claude, gemini, perplexity. Default: auto-select best for coding')
+        provider: z.string().optional().describe('AI provider to use: chatgpt, claude, gemini, perplexity, kimi, minimax, mimo. Default: auto-select best for coding')
     },
     async ({ description, constraints, scale, provider: providerName }) => {
         try {
@@ -1729,7 +1831,7 @@ server.tool(
         file: z.string().describe('File path to generate tests for'),
         framework: z.string().optional().describe('Test framework (jest, vitest, mocha, pytest). Default: auto-detect'),
         focus: z.string().optional().describe('Focus area: unit, integration, edge-cases, all'),
-        provider: z.string().optional().describe('AI provider to use: chatgpt, claude, gemini, perplexity. Default: auto-select best for coding')
+        provider: z.string().optional().describe('AI provider to use: chatgpt, claude, gemini, perplexity, kimi, minimax, mimo. Default: auto-select best for coding')
     },
     async ({ file, framework, focus, provider: providerName }) => {
         try {
@@ -1776,7 +1878,7 @@ server.tool(
     {
         error: z.string().describe('Error message or stack trace to explain'),
         context: z.string().optional().describe('What you were doing when the error occurred'),
-        provider: z.string().optional().describe('AI provider to use: chatgpt, claude, gemini, perplexity. Default: auto-select')
+        provider: z.string().optional().describe('AI provider to use: chatgpt, claude, gemini, perplexity, kimi, minimax, mimo. Default: auto-select')
     },
     async ({ error, context: ctx, provider: providerName }) => {
         try {
@@ -1814,7 +1916,7 @@ server.tool(
         code: z.string().optional().describe('Code snippet to convert (if no file)'),
         from: z.string().optional().describe('Source language/framework (auto-detected if not specified)'),
         to: z.string().describe('Target language/framework (e.g., "TypeScript", "Python/FastAPI", "Vue 3")'),
-        provider: z.string().optional().describe('AI provider to use: chatgpt, claude, gemini, perplexity. Default: auto-select best for coding')
+        provider: z.string().optional().describe('AI provider to use: chatgpt, claude, gemini, perplexity, kimi, minimax, mimo. Default: auto-select best for coding')
     },
     async ({ file, code, from, to, provider: providerName }) => {
         try {
@@ -1865,7 +1967,7 @@ server.tool(
     async ({ message, providers: selectedProviders, files }) => {
         try {
             const enabled = getEnabledProviders();
-            const allProviders = { perplexity, chatgpt, claude, gemini };
+            const allProviders = { perplexity, chatgpt, claude, gemini, kimi, minimax, mimo };
             
             let fileContext = '';
             if (files && files.length > 0) {
@@ -1915,7 +2017,7 @@ server.tool(
 server.tool(
     'conversation_export',
     {
-        provider: z.string().optional().describe('Provider to export from: chatgpt, claude, gemini, perplexity. Default: all enabled')
+        provider: z.string().optional().describe('Provider to export from: chatgpt, claude, gemini, perplexity, kimi, minimax, mimo. Default: all enabled')
     },
     async ({ provider }) => {
         try {
@@ -1958,7 +2060,7 @@ Any important user preferences, specific instructions, edge cases, constraints, 
 
 Be exhaustive. Do not summarize loosely. A coding AI is going to read this and start building without asking the user a single question — so include everything.`;
 
-            const providers = { perplexity, chatgpt, claude, gemini };
+            const providers = { perplexity, chatgpt, claude, gemini, kimi, minimax, mimo };
             const results = {};
 
             for (const prov of targetProviders) {
@@ -2031,7 +2133,7 @@ server.tool(
     {
         filePath: z.string().describe('Absolute path to the file to analyze'),
         question: z.string().optional().describe('Specific question about the file'),
-        provider: z.string().optional().describe('Which AI to use (chatgpt, claude, gemini, perplexity). Default: claude')
+        provider: z.string().optional().describe('Which AI to use (chatgpt, claude, gemini, perplexity, kimi, minimax, mimo). Default: claude')
     },
     async ({ filePath, question, provider: providerName }) => {
         try {

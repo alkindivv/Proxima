@@ -32,6 +32,21 @@ class BrowserManager {
                 url: 'https://gemini.google.com/app',
                 partition: 'persist:gemini',
                 color: '#4285f4'
+            },
+            kimi: {
+                url: 'https://www.kimi.com/en',
+                partition: 'persist:kimi',
+                color: '#7c3aed'
+            },
+            minimax: {
+                url: 'https://agent.minimax.io/',
+                partition: 'persist:minimax',
+                color: '#f97316'
+            },
+            mimo: {
+                url: 'https://aistudio.xiaomimimo.com/',
+                partition: 'persist:mimo',
+                color: '#2563eb'
             }
         };
 
@@ -429,7 +444,10 @@ class BrowserManager {
                 perplexity: 'perplexity.ai',
                 chatgpt: 'chatgpt.com',
                 claude: 'claude.ai',
-                gemini: 'gemini.google.com'
+                gemini: 'gemini.google.com',
+                kimi: 'kimi.com',
+                minimax: 'minimax.io',
+                mimo: 'xiaomimimo.com'
             };
 
             const domain = providerDomains[provider];
@@ -583,6 +601,23 @@ class BrowserManager {
                             const hasSignIn = !!document.querySelector('a[href*="ServiceLogin"]') ||
                                             !!document.querySelector('a[data-action-id="sign-in"]');
                             return hasInput && !hasSignIn;
+                        })()
+                    `);
+                case 'kimi':
+                case 'minimax':
+                case 'mimo':
+                    return await webContents.executeJavaScript(`
+                        (function() {
+                            const hasInput = !!document.querySelector('textarea') ||
+                                             !!document.querySelector('[contenteditable="true"]') ||
+                                             !!document.querySelector('.ql-editor');
+                            const authButtons = Array.from(document.querySelectorAll('button, a')).filter(el => {
+                                const text = (el.innerText || el.textContent || '').trim().toLowerCase();
+                                if (!text) return false;
+                                return text === 'sign in' || text === 'log in' || text === 'login' || text.includes('continue with google');
+                            });
+                            const onAuthPage = /login|signin|auth/.test(window.location.href.toLowerCase());
+                            return hasInput && authButtons.length === 0 && !onAuthPage;
                         })()
                     `);
                 default:

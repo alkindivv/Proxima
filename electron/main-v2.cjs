@@ -53,7 +53,10 @@ const responseState = {
     perplexity: { fingerprint: '', blockCount: 0 },
     chatgpt: { fingerprint: '' },
     claude: { fingerprint: '' },
-    gemini: { fingerprint: '' }
+    gemini: { fingerprint: '' },
+    kimi: { fingerprint: '' },
+    minimax: { fingerprint: '' },
+    mimo: { fingerprint: '' }
 };
 
 // Default settings
@@ -62,7 +65,10 @@ const defaultSettings = {
         perplexity: { enabled: true, loggedIn: false },
         chatgpt: { enabled: true, loggedIn: false },
         claude: { enabled: false, loggedIn: false },
-        gemini: { enabled: true, loggedIn: false }
+        gemini: { enabled: true, loggedIn: false },
+        kimi: { enabled: false, loggedIn: false },
+        minimax: { enabled: false, loggedIn: false },
+        mimo: { enabled: false, loggedIn: false }
     },
     ipcPort: 19222, // Port for MCP server IPC communication
     theme: 'dark',
@@ -70,16 +76,27 @@ const defaultSettings = {
     startMinimized: false // Start minimized to system tray
 };
 
+function normalizeSettings(saved = {}) {
+    return {
+        ...defaultSettings,
+        ...saved,
+        providers: {
+            ...defaultSettings.providers,
+            ...(saved.providers || {})
+        }
+    };
+}
+
 function loadSettings() {
     try {
         if (fs.existsSync(settingsPath)) {
             const saved = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-            return { ...defaultSettings, ...saved };
+            return normalizeSettings(saved);
         }
     } catch (e) {
         console.error('Error loading settings:', e);
     }
-    return defaultSettings;
+    return normalizeSettings();
 }
 
 function saveSettings(settings) {
@@ -182,7 +199,10 @@ async function restoreCookies(provider, ses) {
             perplexity: { domain: 'perplexity.ai', authCookies: ['__Secure-next-auth.session-token', 'pplx_'] },
             chatgpt: { domain: 'openai.com', authCookies: ['__Secure-next-auth.session-token', '__cf_bm'] },
             claude: { domain: 'claude.ai', authCookies: ['sessionKey', '__cf_bm'] },
-            gemini: { domain: 'google.com', authCookies: ['SID', 'HSID', 'SSID', '__Secure-1PSID', '__Secure-3PSID'] }
+            gemini: { domain: 'google.com', authCookies: ['SID', 'HSID', 'SSID', '__Secure-1PSID', '__Secure-3PSID'] },
+            kimi: { domain: 'kimi.com', authCookies: ['session', 'token', 'auth', 'access'] },
+            minimax: { domain: 'minimax.io', authCookies: ['session', 'token', 'auth', 'access'] },
+            mimo: { domain: 'xiaomimimo.com', authCookies: ['session', 'token', 'auth', 'access'] }
         };
         const authConfig = providerAuthDomains[provider];
         if (authConfig) {
@@ -767,6 +787,10 @@ async function sendMessageToProvider(provider, message, forceDOM = false) {
             return await sendToClaude(webContents, message);
         case 'gemini':
             return await sendToGemini(webContents, message);
+        case 'kimi':
+        case 'minimax':
+        case 'mimo':
+            return await sendToModernProvider(webContents, provider, message);
         default:
             throw new Error(`Unknown provider: ${provider}`);
     }
@@ -1142,6 +1166,149 @@ async function sendToGemini(webContents, message) {
     return { sent: true };
 }
 
+async function sendToModernProvider(webContents, provider, message) {
+    console.log(`[${provider}] Sending message...`);
+
+    const providerUrl = browserManager?.providers?.[provider]?.url;
+    const currentUrl = await webContents.executeJavaScript('window.location.href').catch(() => '');
+    if (providerUrl && currentUrl && !currentUrl.includes(new URL(providerUrl).hostname)) {
+        await webContents.loadURL(providerUrl);
+        await sleep(2000);
+    }
+
+    const oldResponseFingerprint = await webContents.executeJavaScript(`
+        (function() {
+            const selectors = [
+                '[data-message-author-role="assistant"]',
+                '[data-testid*="assistant"]',
+                '[data-testid*="answer"]',
+                '[class*="assistant"][class*="message"]',
+                '[class*="response"]',
+                'article',
+                'main article',
+                '.markdown',
+                '[class*="markdown"]',
+                '.prose',
+                '[class*="prose"]'
+            ];
+            for (const selector of selectors) {
+                const elements = document.querySelectorAll(selector);
+                for (let i = elements.length - 1; i >= 0; i--) {
+                    const text = (elements[i].innerText || elements[i].textContent || '').trim();
+                    if (text.length > 20) {
+                        return text.substring(0, 200);
+                    }
+                }
+            }
+            return '';
+        })()
+    `).catch(() => '');
+
+    responseState[provider].fingerprint = oldResponseFingerprint;
+    console.log(`[${provider}] Captured old response fingerprint: ${oldResponseFingerprint.substring(0, 50)}...`);
+
+    await sleep(500);
+
+    const inputFound = await webContents.executeJavaScript(`
+        (function() {
+            const selectors = [
+                'textarea',
+                '[contenteditable="true"]',
+                '.ql-editor',
+                'rich-textarea .ql-editor',
+                'rich-textarea [contenteditable="true"]',
+                'input[type="text"]'
+            ];
+            for (const selector of selectors) {
+                const input = document.querySelector(selector);
+                if (input && input.offsetParent !== null) {
+                    input.focus();
+                    input.click();
+                    return { found: true, selector };
+                }
+            }
+            return { found: false };
+        })()
+    `);
+
+    if (!inputFound.found) {
+        return { sent: false, error: 'No input field found' };
+    }
+
+    await sleep(250);
+
+    const typeResult = await webContents.executeJavaScript(`
+        (function() {
+            const text = ${JSON.stringify(message)};
+            const active = document.activeElement;
+
+            if (active) {
+                if (active.contentEditable === 'true' || active.isContentEditable) {
+                    active.innerHTML = '';
+                    const p = document.createElement('p');
+                    p.textContent = text;
+                    active.appendChild(p);
+                    active.dispatchEvent(new Event('input', { bubbles: true }));
+                    active.dispatchEvent(new Event('change', { bubbles: true }));
+                    return { success: true, method: 'contenteditable' };
+                }
+                if (active.tagName === 'TEXTAREA' || active.tagName === 'INPUT') {
+                    active.value = text;
+                    active.dispatchEvent(new Event('input', { bubbles: true }));
+                    active.dispatchEvent(new Event('change', { bubbles: true }));
+                    return { success: true, method: 'input' };
+                }
+            }
+
+            const fallback = document.querySelector('textarea, [contenteditable="true"], .ql-editor');
+            if (fallback) {
+                fallback.focus();
+                if (fallback.contentEditable === 'true' || fallback.isContentEditable) {
+                    fallback.innerHTML = '';
+                    const p = document.createElement('p');
+                    p.textContent = text;
+                    fallback.appendChild(p);
+                } else {
+                    fallback.value = text;
+                }
+                fallback.dispatchEvent(new Event('input', { bubbles: true }));
+                fallback.dispatchEvent(new Event('change', { bubbles: true }));
+                return { success: true, method: 'fallback' };
+            }
+
+            return { success: false };
+        })()
+    `);
+
+    if (!typeResult.success) {
+        return { sent: false, error: 'Failed to type message' };
+    }
+
+    await sleep(250);
+
+    const clicked = await webContents.executeJavaScript(`
+        (function() {
+            const buttons = Array.from(document.querySelectorAll('button')).filter(btn => btn.offsetParent !== null && !btn.disabled);
+            const sendButton = buttons.find(btn => {
+                const label = ((btn.getAttribute('aria-label') || '') + ' ' + (btn.innerText || '')).toLowerCase();
+                return label.includes('send') || label.includes('submit') || label.includes('ask') || label.includes('enter');
+            });
+            if (sendButton) {
+                sendButton.click();
+                return true;
+            }
+            return false;
+        })()
+    `).catch(() => false);
+
+    if (!clicked) {
+        await webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Enter' });
+        await webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Enter' });
+    }
+
+    return { sent: true };
+}
+
 // Wait for send button to be visible and enabled (after file upload)
 async function waitForSendButtonReady(provider) {
     const webContents = browserManager.getWebContents(provider);
@@ -1177,6 +1344,12 @@ async function waitForSendButtonReady(provider) {
                 } else if (host.includes('perplexity')) {
                     sendBtn = document.querySelector('button[aria-label*="Submit"]') ||
                               document.querySelector('button[type="submit"]');
+                } else if (host.includes('kimi') || host.includes('minimax') || host.includes('xiaomimimo')) {
+                    const buttons = Array.from(document.querySelectorAll('button'));
+                    sendBtn = buttons.find(btn => {
+                        const label = ((btn.getAttribute('aria-label') || '') + ' ' + (btn.innerText || '')).toLowerCase();
+                        return label.includes('send') || label.includes('submit') || label.includes('ask');
+                    }) || document.querySelector('button[type="submit"]');
                 }
                 
                 if (sendBtn) {
@@ -1340,6 +1513,33 @@ async function getResponseWithTypingStatus(provider) {
             `).catch(() => '');
             responseState.gemini.fingerprint = oldFp;
             console.log(`[Gemini] Captured old response fingerprint: ${oldFp.substring(0, 50)}...`);
+        } else if (provider === 'kimi' || provider === 'minimax' || provider === 'mimo') {
+            const oldFp = await webContents.executeJavaScript(`
+                (function() {
+                    const selectors = [
+                        '[data-message-author-role="assistant"]',
+                        '[data-testid*="assistant"]',
+                        '[data-testid*="answer"]',
+                        '[class*="assistant"][class*="message"]',
+                        '[class*="response"]',
+                        'article',
+                        '.markdown',
+                        '[class*="markdown"]',
+                        '.prose',
+                        '[class*="prose"]'
+                    ];
+                    for (const selector of selectors) {
+                        const els = document.querySelectorAll(selector);
+                        for (let i = els.length - 1; i >= 0; i--) {
+                            const text = (els[i].innerText || els[i].textContent || '').trim();
+                            if (text.length > 20) return text.substring(0, 200);
+                        }
+                    }
+                    return '';
+                })()
+            `).catch(() => '');
+            responseState[provider].fingerprint = oldFp;
+            console.log(`[${provider}] Captured old response fingerprint: ${oldFp.substring(0, 50)}...`);
         }
     } catch (e) {
         console.error(`[getResponseWithTyping] Error capturing old fingerprint for ${provider}:`, e.message);
@@ -1380,6 +1580,8 @@ async function getProviderResponse(provider, customSelector = null) {
         oldFingerprint = responseState.chatgpt.fingerprint || '';
     } else if (provider === 'gemini') {
         oldFingerprint = responseState.gemini.fingerprint || '';
+    } else if (provider === 'kimi' || provider === 'minimax' || provider === 'mimo') {
+        oldFingerprint = responseState[provider].fingerprint || '';
     }
 
         // Smart typing wait — check if AI is currently typing, wait only if needed
@@ -1397,7 +1599,7 @@ async function getProviderResponse(provider, customSelector = null) {
             const typingNow = await isAITyping(provider);
             if (typingNow.isTyping) {
                 typingDetected = true;
-            } else if (provider === 'perplexity' || provider === 'gemini') {
+            } else if (provider === 'perplexity' || provider === 'gemini' || provider === 'kimi' || provider === 'minimax' || provider === 'mimo') {
                 // May not have started typing yet — retry a few times
                 for (let retry = 0; retry < 6; retry++) {
                     await sleep(500);
@@ -2006,6 +2208,31 @@ async function getProviderResponse(provider, customSelector = null) {
                         if (markdown && markdown.length > 0) return markdown;
                     }
                 }
+
+                // Kimi / MiniMax / MiMo - generic modern chat extraction
+                if (host.includes('kimi') || host.includes('minimax') || host.includes('xiaomimimo')) {
+                    const selectors = [
+                        '[data-message-author-role="assistant"]',
+                        '[data-testid*="assistant"]',
+                        '[data-testid*="answer"]',
+                        '[class*="assistant"][class*="message"]',
+                        '[class*="response"]',
+                        'article',
+                        '.markdown',
+                        '[class*="markdown"]',
+                        '.prose',
+                        '[class*="prose"]'
+                    ];
+
+                    for (const selector of selectors) {
+                        const elements = document.querySelectorAll(selector);
+                        for (let i = elements.length - 1; i >= 0; i--) {
+                            const el = elements[i];
+                            const markdown = cleanMarkdown(domToMarkdown(el));
+                            if (markdown && markdown.length > 20) return markdown;
+                        }
+                    }
+                }
                 
                 return '';
             })()
@@ -2061,8 +2288,8 @@ async function getProviderResponse(provider, customSelector = null) {
                     }
                 }
 
-                // For Claude: Check if this is actually a NEW response (not the old one)
-                if (provider === 'claude' && oldFingerprint && !foundNewResponse) {
+                // For non-Perplexity providers: make sure this is a NEW response
+                if (provider !== 'perplexity' && oldFingerprint && !foundNewResponse) {
                     const currentFingerprint = text.substring(0, 200).trim();
                     if (currentFingerprint === oldFingerprint ||
                         oldFingerprint.startsWith(currentFingerprint.substring(0, 100)) ||
@@ -2085,8 +2312,8 @@ async function getProviderResponse(provider, customSelector = null) {
                             responseState.perplexity.fingerprint = '';
                             responseState.perplexity.blockCount = 0;
                         }
-                        if (provider === 'claude') {
-                            responseState.claude.fingerprint = '';
+                        if (responseState[provider]) {
+                            responseState[provider].fingerprint = '';
                         }
                         return text;
                     }
@@ -2333,6 +2560,30 @@ async function isAITyping(provider) {
                             if (text.length < 100 || text.includes('Answer now') || text.includes('Refining') || text.includes('Analyzing')) {
                                 return { isTyping: true, provider: 'gemini' };
                             }
+                        }
+                    }
+                }
+
+                // Kimi / MiniMax / MiMo typing detection
+                if (host.includes('kimi') || host.includes('minimax') || host.includes('xiaomimimo')) {
+                    const stopButton = document.querySelector('button[aria-label*="Stop"], button[aria-label*="stop"]');
+                    if (stopButton && stopButton.offsetParent !== null) {
+                        return { isTyping: true, provider: host };
+                    }
+
+                    const busyIndicators = document.querySelectorAll('[class*="typing"], [class*="thinking"], [class*="generating"], [class*="streaming"], .animate-spin, [class*="loading"]');
+                    for (const el of busyIndicators) {
+                        if (el.offsetParent !== null && !el.closest('nav, header, aside')) {
+                            return { isTyping: true, provider: host };
+                        }
+                    }
+
+                    const responseCandidates = document.querySelectorAll('[data-testid*="answer"], [class*="response"], article, .markdown, [class*="markdown"], .prose, [class*="prose"]');
+                    if (responseCandidates.length > 0) {
+                        const lastResp = responseCandidates[responseCandidates.length - 1];
+                        const text = (lastResp.innerText || lastResp.textContent || '').trim();
+                        if (text.length < 80 && /thinking|analyzing|loading|generating/i.test(text)) {
+                            return { isTyping: true, provider: host };
                         }
                     }
                 }
@@ -2606,7 +2857,10 @@ ipcMain.handle('get-cookies', async (event, provider) => {
             perplexity: 'perplexity.ai',
             chatgpt: 'openai.com',
             claude: 'claude.ai',
-            gemini: 'google.com'
+            gemini: 'google.com',
+            kimi: 'kimi.com',
+            minimax: 'minimax.io',
+            mimo: 'xiaomimimo.com'
         };
 
         const domain = providerDomains[provider];
