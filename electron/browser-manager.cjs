@@ -47,6 +47,21 @@ class BrowserManager {
                 url: 'https://aistudio.xiaomimimo.com/',
                 partition: 'persist:mimo',
                 color: '#2563eb'
+            },
+            qwen: {
+                url: 'https://chat.qwen.ai/',
+                partition: 'persist:qwen',
+                color: '#ef4444'
+            },
+            zai: {
+                url: 'https://z.ai/',
+                partition: 'persist:zai',
+                color: '#14b8a6'
+            },
+            deepseek: {
+                url: 'https://chat.deepseek.com/',
+                partition: 'persist:deepseek',
+                color: '#4f46e5'
             }
         };
 
@@ -447,7 +462,10 @@ class BrowserManager {
                 gemini: 'gemini.google.com',
                 kimi: 'kimi.com',
                 minimax: 'minimax.io',
-                mimo: 'xiaomimimo.com'
+                mimo: 'xiaomimimo.com',
+                qwen: 'qwen.ai',
+                zai: 'z.ai',
+                deepseek: 'deepseek.com'
             };
 
             const domain = providerDomains[provider];
@@ -606,6 +624,9 @@ class BrowserManager {
                 case 'kimi':
                 case 'minimax':
                 case 'mimo':
+                case 'qwen':
+                case 'zai':
+                case 'deepseek':
                     return await webContents.executeJavaScript(`
                         (function() {
                             const hasInput = !!document.querySelector('textarea') ||

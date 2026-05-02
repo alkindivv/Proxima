@@ -152,7 +152,7 @@ function pickBestProvider(preferred) {
         if (found) return found;
         return null;
     }
-    return ['claude', 'chatgpt', 'gemini', 'perplexity', 'kimi', 'minimax', 'mimo'].find(p => enabled.includes(p)) || null;
+    return ['claude', 'chatgpt', 'gemini', 'perplexity', 'kimi', 'minimax', 'mimo', 'qwen', 'zai', 'deepseek'].find(p => enabled.includes(p)) || null;
 }
 
 // ─── Message Handler ────────────────────────────────

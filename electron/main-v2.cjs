@@ -56,7 +56,10 @@ const responseState = {
     gemini: { fingerprint: '' },
     kimi: { fingerprint: '' },
     minimax: { fingerprint: '' },
-    mimo: { fingerprint: '' }
+    mimo: { fingerprint: '' },
+    qwen: { fingerprint: '' },
+    zai: { fingerprint: '' },
+    deepseek: { fingerprint: '' }
 };
 
 // Default settings
@@ -68,7 +71,10 @@ const defaultSettings = {
         gemini: { enabled: true, loggedIn: false },
         kimi: { enabled: false, loggedIn: false },
         minimax: { enabled: false, loggedIn: false },
-        mimo: { enabled: false, loggedIn: false }
+        mimo: { enabled: false, loggedIn: false },
+        qwen: { enabled: false, loggedIn: false },
+        zai: { enabled: false, loggedIn: false },
+        deepseek: { enabled: false, loggedIn: false }
     },
     ipcPort: 19222, // Port for MCP server IPC communication
     theme: 'dark',
@@ -202,7 +208,10 @@ async function restoreCookies(provider, ses) {
             gemini: { domain: 'google.com', authCookies: ['SID', 'HSID', 'SSID', '__Secure-1PSID', '__Secure-3PSID'] },
             kimi: { domain: 'kimi.com', authCookies: ['session', 'token', 'auth', 'access'] },
             minimax: { domain: 'minimax.io', authCookies: ['session', 'token', 'auth', 'access'] },
-            mimo: { domain: 'xiaomimimo.com', authCookies: ['session', 'token', 'auth', 'access'] }
+            mimo: { domain: 'xiaomimimo.com', authCookies: ['session', 'token', 'auth', 'access'] },
+            qwen: { domain: 'qwen.ai', authCookies: ['session', 'token', 'auth', 'access'] },
+            zai: { domain: 'z.ai', authCookies: ['session', 'token', 'auth', 'access'] },
+            deepseek: { domain: 'deepseek.com', authCookies: ['session', 'token', 'auth', 'access'] }
         };
         const authConfig = providerAuthDomains[provider];
         if (authConfig) {
@@ -790,6 +799,9 @@ async function sendMessageToProvider(provider, message, forceDOM = false) {
         case 'kimi':
         case 'minimax':
         case 'mimo':
+        case 'qwen':
+        case 'zai':
+        case 'deepseek':
             return await sendToModernProvider(webContents, provider, message);
         default:
             throw new Error(`Unknown provider: ${provider}`);
@@ -1377,7 +1389,7 @@ async function waitForSendButtonReady(provider) {
                 } else if (host.includes('perplexity')) {
                     sendBtn = document.querySelector('button[aria-label*="Submit"]') ||
                               document.querySelector('button[type="submit"]');
-                } else if (host.includes('kimi') || host.includes('minimax') || host.includes('xiaomimimo')) {
+                } else if (host.includes('kimi') || host.includes('minimax') || host.includes('xiaomimimo') || host.includes('qwen') || host.includes('z.ai') || host.includes('deepseek')) {
                     const buttons = Array.from(document.querySelectorAll('button'));
                     sendBtn = buttons.find(btn => {
                         const label = ((btn.getAttribute('aria-label') || '') + ' ' + (btn.innerText || '')).toLowerCase();
@@ -1546,7 +1558,7 @@ async function getResponseWithTypingStatus(provider) {
             `).catch(() => '');
             responseState.gemini.fingerprint = oldFp;
             console.log(`[Gemini] Captured old response fingerprint: ${oldFp.substring(0, 50)}...`);
-        } else if (provider === 'kimi' || provider === 'minimax' || provider === 'mimo') {
+        } else if (provider === 'kimi' || provider === 'minimax' || provider === 'mimo' || provider === 'qwen' || provider === 'zai' || provider === 'deepseek') {
             const oldFp = await webContents.executeJavaScript(`
                 (function() {
                     const selectors = [
@@ -1613,7 +1625,7 @@ async function getProviderResponse(provider, customSelector = null) {
         oldFingerprint = responseState.chatgpt.fingerprint || '';
     } else if (provider === 'gemini') {
         oldFingerprint = responseState.gemini.fingerprint || '';
-    } else if (provider === 'kimi' || provider === 'minimax' || provider === 'mimo') {
+    } else if (provider === 'kimi' || provider === 'minimax' || provider === 'mimo' || provider === 'qwen' || provider === 'zai' || provider === 'deepseek') {
         oldFingerprint = responseState[provider].fingerprint || '';
     }
 
@@ -1632,7 +1644,7 @@ async function getProviderResponse(provider, customSelector = null) {
             const typingNow = await isAITyping(provider);
             if (typingNow.isTyping) {
                 typingDetected = true;
-            } else if (provider === 'perplexity' || provider === 'gemini' || provider === 'kimi' || provider === 'minimax' || provider === 'mimo') {
+            } else if (provider === 'perplexity' || provider === 'gemini' || provider === 'kimi' || provider === 'minimax' || provider === 'mimo' || provider === 'qwen' || provider === 'zai' || provider === 'deepseek') {
                 // May not have started typing yet — retry a few times
                 for (let retry = 0; retry < 6; retry++) {
                     await sleep(500);
@@ -2243,7 +2255,7 @@ async function getProviderResponse(provider, customSelector = null) {
                 }
 
                 // Kimi / MiniMax / MiMo - generic modern chat extraction
-                if (host.includes('kimi') || host.includes('minimax') || host.includes('xiaomimimo')) {
+                if (host.includes('kimi') || host.includes('minimax') || host.includes('xiaomimimo') || host.includes('qwen') || host.includes('z.ai') || host.includes('deepseek')) {
                     const selectors = [
                         '[data-message-author-role="assistant"]',
                         '[data-testid*="assistant"]',
@@ -2598,7 +2610,7 @@ async function isAITyping(provider) {
                 }
 
                 // Kimi / MiniMax / MiMo typing detection
-                if (host.includes('kimi') || host.includes('minimax') || host.includes('xiaomimimo')) {
+                if (host.includes('kimi') || host.includes('minimax') || host.includes('xiaomimimo') || host.includes('qwen') || host.includes('z.ai') || host.includes('deepseek')) {
                     const stopButton = document.querySelector('button[aria-label*="Stop"], button[aria-label*="stop"]');
                     if (stopButton && stopButton.offsetParent !== null) {
                         return { isTyping: true, provider: host };
@@ -2763,7 +2775,10 @@ ipcMain.handle('open-in-system-browser', (event, provider) => {
         perplexity: 'https://www.perplexity.ai/',
         chatgpt: 'https://chat.openai.com/',
         claude: 'https://claude.ai/',
-        gemini: 'https://gemini.google.com/'
+        gemini: 'https://gemini.google.com/',
+        qwen: 'https://chat.qwen.ai/',
+        zai: 'https://z.ai/',
+        deepseek: 'https://chat.deepseek.com/'
     };
     if (urls[provider]) {
         shell.openExternal(urls[provider]);
@@ -2893,7 +2908,10 @@ ipcMain.handle('get-cookies', async (event, provider) => {
             gemini: 'google.com',
             kimi: 'kimi.com',
             minimax: 'minimax.io',
-            mimo: 'xiaomimimo.com'
+            mimo: 'xiaomimimo.com',
+            qwen: 'qwen.ai',
+            zai: 'z.ai',
+            deepseek: 'deepseek.com'
         };
 
         const domain = providerDomains[provider];
