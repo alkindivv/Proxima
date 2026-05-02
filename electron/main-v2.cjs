@@ -1240,40 +1240,62 @@ async function sendToModernProvider(webContents, provider, message) {
     const typeResult = await webContents.executeJavaScript(`
         (function() {
             const text = ${JSON.stringify(message)};
-            const active = document.activeElement;
 
-            if (active) {
-                if (active.contentEditable === 'true' || active.isContentEditable) {
-                    active.innerHTML = '';
-                    const p = document.createElement('p');
-                    p.textContent = text;
-                    active.appendChild(p);
-                    active.dispatchEvent(new Event('input', { bubbles: true }));
-                    active.dispatchEvent(new Event('change', { bubbles: true }));
-                    return { success: true, method: 'contenteditable' };
-                }
-                if (active.tagName === 'TEXTAREA' || active.tagName === 'INPUT') {
-                    active.value = text;
-                    active.dispatchEvent(new Event('input', { bubbles: true }));
-                    active.dispatchEvent(new Event('change', { bubbles: true }));
-                    return { success: true, method: 'input' };
+            function setNativeValue(el, value) {
+                const proto = el.tagName === 'TEXTAREA'
+                    ? window.HTMLTextAreaElement.prototype
+                    : window.HTMLInputElement.prototype;
+                const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+                if (desc && typeof desc.set === 'function') {
+                    desc.set.call(el, value);
+                } else {
+                    el.value = value;
                 }
             }
 
-            const fallback = document.querySelector('textarea, [contenteditable="true"], .ql-editor');
+            function fireTextEvents(el, value) {
+                if (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT') {
+                    setNativeValue(el, value);
+                    el.dispatchEvent(new InputEvent('input', {
+                        bubbles: true,
+                        cancelable: true,
+                        data: value,
+                        inputType: 'insertText'
+                    }));
+                    el.dispatchEvent(new Event('change', { bubbles: true }));
+                    el.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: ' ', code: 'Space' }));
+                    el.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: ' ', code: 'Space' }));
+                    return { success: true, method: 'native-input' };
+                }
+
+                if (el.contentEditable === 'true' || el.isContentEditable) {
+                    el.innerHTML = '';
+                    const p = document.createElement('p');
+                    p.textContent = value;
+                    el.appendChild(p);
+                    el.dispatchEvent(new InputEvent('input', {
+                        bubbles: true,
+                        cancelable: true,
+                        data: value,
+                        inputType: 'insertText'
+                    }));
+                    el.dispatchEvent(new Event('change', { bubbles: true }));
+                    return { success: true, method: 'contenteditable' };
+                }
+
+                return { success: false };
+            }
+
+            const active = document.activeElement;
+            if (active) {
+                const result = fireTextEvents(active, text);
+                if (result.success) return result;
+            }
+
+            const fallback = document.querySelector('textarea, [contenteditable="true"], .ql-editor, input[type="text"]');
             if (fallback) {
                 fallback.focus();
-                if (fallback.contentEditable === 'true' || fallback.isContentEditable) {
-                    fallback.innerHTML = '';
-                    const p = document.createElement('p');
-                    p.textContent = text;
-                    fallback.appendChild(p);
-                } else {
-                    fallback.value = text;
-                }
-                fallback.dispatchEvent(new Event('input', { bubbles: true }));
-                fallback.dispatchEvent(new Event('change', { bubbles: true }));
-                return { success: true, method: 'fallback' };
+                return fireTextEvents(fallback, text);
             }
 
             return { success: false };
@@ -1288,21 +1310,32 @@ async function sendToModernProvider(webContents, provider, message) {
 
     const clicked = await webContents.executeJavaScript(`
         (function() {
-            const buttons = Array.from(document.querySelectorAll('button')).filter(btn => btn.offsetParent !== null && !btn.disabled);
+            const visible = btn => btn && (btn.offsetParent !== null || btn.getClientRects().length > 0);
+
+            if (window.location.host.includes('xiaomimimo')) {
+                const mimoBtn = document.querySelector('button[data-track-id="home_send_btn"], button[data-track-id*="send_btn"]');
+                if (mimoBtn && visible(mimoBtn) && !mimoBtn.disabled) {
+                    mimoBtn.click();
+                    return { clicked: true, method: 'mimo-send-button' };
+                }
+            }
+
+            const buttons = Array.from(document.querySelectorAll('button')).filter(btn => visible(btn) && !btn.disabled);
             const sendButton = buttons.find(btn => {
-                const label = ((btn.getAttribute('aria-label') || '') + ' ' + (btn.innerText || '')).toLowerCase();
+                const label = ((btn.getAttribute('aria-label') || '') + ' ' + (btn.innerText || '') + ' ' + (btn.getAttribute('data-track-id') || '')).toLowerCase();
                 return label.includes('send') || label.includes('submit') || label.includes('ask') || label.includes('enter');
             });
             if (sendButton) {
                 sendButton.click();
-                return true;
+                return { clicked: true, method: 'generic-button' };
             }
-            return false;
+            return { clicked: false };
         })()
-    `).catch(() => false);
+    `).catch(() => ({ clicked: false }));
 
-    if (!clicked) {
+    if (!clicked.clicked) {
         await webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Enter' });
+        await webContents.sendInputEvent({ type: 'char', keyCode: '\r' });
         await webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Enter' });
     }
 
