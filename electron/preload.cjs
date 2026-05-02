@@ -14,6 +14,8 @@ contextBridge.exposeInMainWorld('agentHub', {
     hideBrowser: () => ipcRenderer.invoke('hide-browser'),
     checkLoginStatus: (provider) => ipcRenderer.invoke('check-login-status', provider),
     reloadProvider: (provider) => ipcRenderer.invoke('reload-provider', provider),
+    goBack: (provider) => ipcRenderer.invoke('go-back', provider),
+    goForward: (provider) => ipcRenderer.invoke('go-forward', provider),
     openInSystemBrowser: (provider) => ipcRenderer.invoke('open-in-system-browser', provider),
 
 

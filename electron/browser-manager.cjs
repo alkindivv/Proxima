@@ -578,6 +578,24 @@ class BrowserManager {
         if (webContents) await webContents.reload();
     }
 
+    async goBack(provider) {
+        const webContents = this.getWebContents(provider);
+        if (webContents && webContents.canGoBack()) {
+            webContents.goBack();
+            return true;
+        }
+        return false;
+    }
+
+    async goForward(provider) {
+        const webContents = this.getWebContents(provider);
+        if (webContents && webContents.canGoForward()) {
+            webContents.goForward();
+            return true;
+        }
+        return false;
+    }
+
     async isLoggedIn(provider) {
         const webContents = this.getWebContents(provider);
         if (!webContents) return false;

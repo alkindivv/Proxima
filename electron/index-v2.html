@@ -1756,12 +1756,22 @@ ws.onmessage = (e) => console.log(JSON.parse(e.data));</code>
         }
 
         // Navigation controls
-        function goBack() {
-            // Will be handled by browser view
+        async function goBack() {
+            if (currentTab && currentTab !== 'settings') {
+                const result = await agentHub.goBack(currentTab);
+                if (!result || !result.success) {
+                    showToast('Tidak ada halaman sebelumnya');
+                }
+            }
         }
 
-        function goForward() {
-            // Will be handled by browser view
+        async function goForward() {
+            if (currentTab && currentTab !== 'settings') {
+                const result = await agentHub.goForward(currentTab);
+                if (!result || !result.success) {
+                    showToast('Tidak ada halaman berikutnya');
+                }
+            }
         }
 
         // Open in system browser (for Google login issues)

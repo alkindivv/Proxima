@@ -2757,6 +2757,24 @@ ipcMain.handle('reload-provider', async (event, provider) => {
     }
 });
 
+ipcMain.handle('go-back', async (event, provider) => {
+    try {
+        const ok = await browserManager.goBack(provider);
+        return { success: ok, provider, error: ok ? null : 'No back history available' };
+    } catch (e) {
+        return { success: false, error: e.message };
+    }
+});
+
+ipcMain.handle('go-forward', async (event, provider) => {
+    try {
+        const ok = await browserManager.goForward(provider);
+        return { success: ok, provider, error: ok ? null : 'No forward history available' };
+    } catch (e) {
+        return { success: false, error: e.message };
+    }
+});
+
 ipcMain.handle('get-mcp-config', () => {
     const resourcesPath = process.resourcesPath || path.join(__dirname, '..');
     const unpackedPath = path.join(resourcesPath, 'app.asar.unpacked', 'src', 'mcp-server-v3.js');
