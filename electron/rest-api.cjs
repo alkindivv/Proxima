@@ -28,7 +28,10 @@ const MODEL_ALIASES = {
     
     'perplexity': 'perplexity', 'pplx': 'perplexity', 'sonar': 'perplexity',
 
-    
+    'kimi': 'kimi', 'moonshot': 'kimi', 'kimi-k2': 'kimi',
+    'minimax': 'minimax', 'mini-max': 'minimax', 'abab': 'minimax',
+    'mimo': 'mimo', 'xiaomi': 'mimo', 'xiaomimimo': 'mimo',
+
     'auto': 'auto',   // Auto-pick best available
     'all': 'all'       // Query all providers
 };
@@ -186,7 +189,7 @@ function pickBestProvider(preferred) {
         if (enabled.includes(preferred)) return preferred;
         return null;
     }
-    return ['claude', 'chatgpt', 'gemini', 'perplexity'].find(p => enabled.includes(p)) || null;
+    return ['claude', 'chatgpt', 'gemini', 'perplexity', 'kimi', 'minimax', 'mimo'].find(p => enabled.includes(p)) || null;
 }
 
 function extractMessage(body) {

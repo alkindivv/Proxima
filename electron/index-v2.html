@@ -1010,6 +1010,21 @@
             <span class="tab-name">Gemini</span>
             <div class="tab-status offline" id="status-dot-gemini"></div>
         </div>
+        <div class="tab" data-provider="kimi" onclick="switchTab('kimi')">
+            <img src="../assets/kimi.svg" class="tab-icon-img" alt="Kimi">
+            <span class="tab-name">Kimi</span>
+            <div class="tab-status offline" id="status-dot-kimi"></div>
+        </div>
+        <div class="tab" data-provider="minimax" onclick="switchTab('minimax')">
+            <img src="../assets/minimax.svg" class="tab-icon-img" alt="MiniMax">
+            <span class="tab-name">MiniMax</span>
+            <div class="tab-status offline" id="status-dot-minimax"></div>
+        </div>
+        <div class="tab" data-provider="mimo" onclick="switchTab('mimo')">
+            <img src="../assets/mimo.svg" class="tab-icon-img" alt="MiMo">
+            <span class="tab-name">MiMo</span>
+            <div class="tab-status offline" id="status-dot-mimo"></div>
+        </div>
         <div class="tab-spacer"></div>
         <div class="tab" data-tab="settings" onclick="switchTab('settings')">
             <div class="tab-icon settings">⚙️</div>
@@ -1042,8 +1057,7 @@
                 <h1 class="welcome-title">Proxima</h1>
                 <p class="welcome-subtitle">
                     Free Multi-AI MCP Server<br>
-                    <span class="welcome-sub-light">No API keys required. Connect ChatGPT, Claude, Gemini & Perplexity
-                        locally.</span>
+                    <span class="welcome-sub-light">No API keys required. Connect ChatGPT, Claude, Gemini, Perplexity, Kimi, MiniMax & MiMo locally.</span>
                 </p>
                 <div class="welcome-divider"></div>
                 <h3 class="welcome-get-started">Get Started</h3>
@@ -1126,6 +1140,39 @@
                             <div class="provider-card-status not-ready" id="card-status-gemini">Not logged in</div>
                         </div>
                         <div class="toggle-switch active" data-provider="gemini" onclick="toggleProvider(this)"></div>
+                    </div>
+                    <div class="provider-card disabled" data-provider="kimi">
+                        <div class="provider-card-icon" style="background: transparent;">
+                            <img src="../assets/kimi.svg"
+                                style="width: 100%; height: 100%; object-fit: contain; border-radius: 8px;">
+                        </div>
+                        <div class="provider-card-info">
+                            <div class="provider-card-name">Kimi</div>
+                            <div class="provider-card-status not-ready" id="card-status-kimi">Disabled</div>
+                        </div>
+                        <div class="toggle-switch" data-provider="kimi" onclick="toggleProvider(this)"></div>
+                    </div>
+                    <div class="provider-card disabled" data-provider="minimax">
+                        <div class="provider-card-icon" style="background: transparent;">
+                            <img src="../assets/minimax.svg"
+                                style="width: 100%; height: 100%; object-fit: contain; border-radius: 8px;">
+                        </div>
+                        <div class="provider-card-info">
+                            <div class="provider-card-name">MiniMax</div>
+                            <div class="provider-card-status not-ready" id="card-status-minimax">Disabled</div>
+                        </div>
+                        <div class="toggle-switch" data-provider="minimax" onclick="toggleProvider(this)"></div>
+                    </div>
+                    <div class="provider-card disabled" data-provider="mimo">
+                        <div class="provider-card-icon" style="background: transparent;">
+                            <img src="../assets/mimo.svg"
+                                style="width: 100%; height: 100%; object-fit: contain; border-radius: 8px;">
+                        </div>
+                        <div class="provider-card-info">
+                            <div class="provider-card-name">MiMo</div>
+                            <div class="provider-card-status not-ready" id="card-status-mimo">Disabled</div>
+                        </div>
+                        <div class="toggle-switch" data-provider="mimo" onclick="toggleProvider(this)"></div>
                     </div>
                 </div>
             </div>
