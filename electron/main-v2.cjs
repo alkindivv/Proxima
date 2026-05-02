@@ -1332,6 +1332,22 @@ async function sendToModernProvider(webContents, provider, message) {
                 }
             }
 
+            if (window.location.host.includes('qwen.ai')) {
+                const qwenBtn = document.querySelector('button.send-button');
+                if (qwenBtn && visible(qwenBtn) && !qwenBtn.disabled) {
+                    qwenBtn.click();
+                    return { clicked: true, method: 'qwen-send-button' };
+                }
+            }
+
+            if (window.location.host.includes('z.ai')) {
+                const zaiBtn = document.querySelector('button.sendMessageButton');
+                if (zaiBtn && visible(zaiBtn) && !zaiBtn.disabled) {
+                    zaiBtn.click();
+                    return { clicked: true, method: 'zai-send-button' };
+                }
+            }
+
             const buttons = Array.from(document.querySelectorAll('button')).filter(btn => visible(btn) && !btn.disabled);
             const sendButton = buttons.find(btn => {
                 const label = ((btn.getAttribute('aria-label') || '') + ' ' + (btn.innerText || '') + ' ' + (btn.getAttribute('data-track-id') || '')).toLowerCase();
@@ -1388,6 +1404,12 @@ async function waitForSendButtonReady(provider) {
                               document.querySelector('button.send-button');
                 } else if (host.includes('perplexity')) {
                     sendBtn = document.querySelector('button[aria-label*="Submit"]') ||
+                              document.querySelector('button[type="submit"]');
+                } else if (host.includes('qwen.ai')) {
+                    sendBtn = document.querySelector('button.send-button') ||
+                              document.querySelector('button[type="submit"]');
+                } else if (host.includes('z.ai')) {
+                    sendBtn = document.querySelector('button.sendMessageButton') ||
                               document.querySelector('button[type="submit"]');
                 } else if (host.includes('kimi') || host.includes('minimax') || host.includes('xiaomimimo') || host.includes('qwen') || host.includes('z.ai') || host.includes('deepseek')) {
                     const buttons = Array.from(document.querySelectorAll('button'));
