@@ -1638,7 +1638,26 @@ async function getResponseWithTypingStatus(provider) {
             `).catch(() => '');
             responseState.gemini.fingerprint = oldFp;
             console.log(`[Gemini] Captured old response fingerprint: ${oldFp.substring(0, 50)}...`);
-        } else if (provider === 'kimi' || provider === 'minimax' || provider === 'mimo' || provider === 'qwen' || provider === 'zai' || provider === 'deepseek') {
+        } else if (provider === 'qwen') {
+            const oldFp = await webContents.executeJavaScript(`
+                (function() {
+                    // For Qwen: capture the LAST meaningful message BEFORE thinking started
+                    // Never capture "Thinking completed" as fingerprint
+                    const msgs = document.querySelectorAll('.qwen-chat-message');
+                    for (let i = msgs.length - 1; i >= 0; i--) {
+                        const text = (msgs[i].textContent || '').trim();
+                        if (text && text.length > 5 && !text.includes('Thinking completed')) {
+                            return text.substring(0, 200);
+                        }
+                    }
+                    // Fallback: capture anything that's not thinking
+                    const body = (document.body?.textContent || '').trim();
+                    return body.substring(0, 200);
+                })()
+            `).catch(() => '');
+            responseState.qwen.fingerprint = oldFp;
+            console.log(`[Qwen] Captured old response fingerprint: ${oldFp.substring(0, 50)}...`);
+        } else if (provider === 'kimi' || provider === 'minimax' || provider === 'mimo' || provider === 'zai' || provider === 'deepseek') {
             const oldFp = await webContents.executeJavaScript(`
                 (function() {
                     const selectors = [
@@ -2334,6 +2353,43 @@ async function getProviderResponse(provider, customSelector = null) {
                     }
                 }
 
+                // Qwen specific - capture the markdown content div directly
+                if (host.includes('qwen')) {
+                    // Qwen renders response inside .qwen-markdown div
+                    // The div is empty until content is streamed in
+                    // Use response-message-content textContent as primary source
+                    const respContent = document.querySelector('.response-message-content');
+                    if (respContent) {
+                        const rawText = (respContent.textContent || '').trim();
+                        // Skip "Thinking completed" placeholder and very short content
+                        if (rawText.length > 25 && !rawText.includes('Thinking completed')) {
+                            return rawText;
+                        }
+                    }
+                    // Fallback: check the phase-answer div's direct text (no recursion)
+                    const phaseDiv = document.querySelector('.phase-answer');
+                    if (phaseDiv) {
+                        const childTexts = [];
+                        for (let i = 0; i < phaseDiv.children.length; i++) {
+                            const childText = phaseDiv.children[i].textContent || '';
+                            if (childText.trim().length > 25 && !childText.includes('Thinking completed')) {
+                                childTexts.push(childText.trim());
+                            }
+                        }
+                        if (childTexts.length > 0) {
+                            return childTexts.join('\n').substring(0, 2000);
+                        }
+                    }
+                    // Fallback: try qwen-markdown (last resort)
+                    const qwenMarkdown = document.querySelector('.qwen-markdown');
+                    if (qwenMarkdown) {
+                        const markdown = cleanMarkdown(domToMarkdown(qwenMarkdown));
+                        if (markdown && markdown.length > 25 && !markdown.includes('Thinking completed')) {
+                            return markdown;
+                        }
+                    }
+                }
+
                 // Kimi / MiniMax / MiMo - generic modern chat extraction
                 if (host.includes('kimi') || host.includes('minimax') || host.includes('xiaomimimo') || host.includes('qwen') || host.includes('z.ai') || host.includes('deepseek')) {
                     const selectors = [
@@ -2413,8 +2469,42 @@ async function getProviderResponse(provider, customSelector = null) {
                     }
                 }
 
+                // Qwen-specific response detection
+                // IMPORTANT: Keep polling until real content appears
+                // The problem: initial capture returns "Thinking completed"
+                // We must NOT break on thinking-complete; continue waiting
+                if (provider === 'qwen') {
+                    const qwenStatus = await webContents.executeJavaScript(`
+                        (function() {
+                            const rc = document.querySelector('.response-message-content');
+                            if (!rc) return { hasAnswer: false, text: '' };
+                            const text = (rc.textContent || '').trim();
+                            // Real answer: content is > 25 chars and NOT just "Thinking completed"
+                            return { hasAnswer: text.length > 25 && !text.includes('Thinking completed'), text: text };
+                        })()
+                    `).catch(() => ({ hasAnswer: false, text: '' }));
+
+                    if (qwenStatus.hasAnswer) {
+                        // Answer is ready - directly capture from response-message-content
+                        const answerText = await webContents.executeJavaScript(`
+                            (function() {
+                                const rc = document.querySelector('.response-message-content');
+                                if (!rc) return '';
+                                const allText = (rc.textContent || '').trim();
+                                return allText.replace(/Thinking completed\s*/gi, '').trim();
+                            })()
+                        `).catch(() => '');
+                        return answerText || 'No response captured';
+                    } else {
+                        // Still thinking or no content yet - keep polling
+                        // Do NOT break, continue the loop
+                        await sleep(1000);
+                        continue;
+                    }
+                }
+
                 // For non-Perplexity providers: make sure this is a NEW response
-                if (provider !== 'perplexity' && oldFingerprint && !foundNewResponse) {
+                if (provider !== 'perplexity' && provider !== 'qwen' && oldFingerprint && !foundNewResponse) {
                     const currentFingerprint = text.substring(0, 200).trim();
                     if (currentFingerprint === oldFingerprint ||
                         oldFingerprint.startsWith(currentFingerprint.substring(0, 100)) ||
@@ -2858,6 +2948,35 @@ ipcMain.handle('get-mcp-config', () => {
 ipcMain.handle('copy-to-clipboard', (event, text) => {
     clipboard.writeText(text);
     return { success: true };
+});
+
+ipcMain.handle('read-clipboard', () => {
+    return clipboard.readText();
+});
+
+// Read clipboard from a specific provider's BrowserView renderer
+// This works because the BrowserView renderer IS the focused document for its webContents
+ipcMain.handle('read-provider-clipboard', async (event, provider) => {
+    try {
+        const webContents = browserManager.getWebContents(provider);
+        if (!webContents || webContents.isDestroyed()) {
+            return { success: false, error: 'Provider view not available' };
+        }
+        // Execute clipboard read in the provider's renderer context
+        // This SHOULD work because this webContents is the focused document
+        const text = await webContents.executeJavaScript(`
+            (async () => {
+                try {
+                    return await navigator.clipboard.readText();
+                } catch (e) {
+                    return 'CLIPBOARD_ERR:' + e.message;
+                }
+            })()
+        `);
+        return { success: true, text };
+    } catch (e) {
+        return { success: false, error: e.message };
+    }
 });
 
 ipcMain.handle('open-external', (event, url) => {
