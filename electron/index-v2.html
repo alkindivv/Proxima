@@ -1025,6 +1025,21 @@
             <span class="tab-name">MiMo</span>
             <div class="tab-status offline" id="status-dot-mimo"></div>
         </div>
+        <div class="tab" data-provider="qwen" onclick="switchTab('qwen')">
+            <img src="../assets/qwen.svg" class="tab-icon-img" alt="Qwen">
+            <span class="tab-name">Qwen</span>
+            <div class="tab-status offline" id="status-dot-qwen"></div>
+        </div>
+        <div class="tab" data-provider="zai" onclick="switchTab('zai')">
+            <img src="../assets/zai.svg" class="tab-icon-img" alt="Z.ai">
+            <span class="tab-name">Z.ai</span>
+            <div class="tab-status offline" id="status-dot-zai"></div>
+        </div>
+        <div class="tab" data-provider="deepseek" onclick="switchTab('deepseek')">
+            <img src="../assets/deepseek.svg" class="tab-icon-img" alt="DeepSeek">
+            <span class="tab-name">DeepSeek</span>
+            <div class="tab-status offline" id="status-dot-deepseek"></div>
+        </div>
         <div class="tab-spacer"></div>
         <div class="tab" data-tab="settings" onclick="switchTab('settings')">
             <div class="tab-icon settings">⚙️</div>
@@ -1057,7 +1072,7 @@
                 <h1 class="welcome-title">Proxima</h1>
                 <p class="welcome-subtitle">
                     Free Multi-AI MCP Server<br>
-                    <span class="welcome-sub-light">No API keys required. Connect ChatGPT, Claude, Gemini, Perplexity, Kimi, MiniMax & MiMo locally.</span>
+                    <span class="welcome-sub-light">No API keys required. Connect ChatGPT, Claude, Gemini, Perplexity, Kimi, MiniMax, MiMo, Qwen, Z.ai & DeepSeek locally.</span>
                 </p>
                 <div class="welcome-divider"></div>
                 <h3 class="welcome-get-started">Get Started</h3>
@@ -1174,6 +1189,39 @@
                         </div>
                         <div class="toggle-switch" data-provider="mimo" onclick="toggleProvider(this)"></div>
                     </div>
+                    <div class="provider-card disabled" data-provider="qwen">
+                        <div class="provider-card-icon" style="background: transparent;">
+                            <img src="../assets/qwen.svg"
+                                style="width: 100%; height: 100%; object-fit: contain; border-radius: 8px;">
+                        </div>
+                        <div class="provider-card-info">
+                            <div class="provider-card-name">Qwen</div>
+                            <div class="provider-card-status not-ready" id="card-status-qwen">Disabled</div>
+                        </div>
+                        <div class="toggle-switch" data-provider="qwen" onclick="toggleProvider(this)"></div>
+                    </div>
+                    <div class="provider-card disabled" data-provider="zai">
+                        <div class="provider-card-icon" style="background: transparent;">
+                            <img src="../assets/zai.svg"
+                                style="width: 100%; height: 100%; object-fit: contain; border-radius: 8px;">
+                        </div>
+                        <div class="provider-card-info">
+                            <div class="provider-card-name">Z.ai</div>
+                            <div class="provider-card-status not-ready" id="card-status-zai">Disabled</div>
+                        </div>
+                        <div class="toggle-switch" data-provider="zai" onclick="toggleProvider(this)"></div>
+                    </div>
+                    <div class="provider-card disabled" data-provider="deepseek">
+                        <div class="provider-card-icon" style="background: transparent;">
+                            <img src="../assets/deepseek.svg"
+                                style="width: 100%; height: 100%; object-fit: contain; border-radius: 8px;">
+                        </div>
+                        <div class="provider-card-info">
+                            <div class="provider-card-name">DeepSeek</div>
+                            <div class="provider-card-status not-ready" id="card-status-deepseek">Disabled</div>
+                        </div>
+                        <div class="toggle-switch" data-provider="deepseek" onclick="toggleProvider(this)"></div>
+                    </div>
                 </div>
             </div>
 
@@ -1203,7 +1251,7 @@
                     <button class="copy-btn" onclick="copyAIPrompt()">Copy Prompt</button>
                     <pre id="ai-prompt" style="white-space: pre-wrap; word-wrap: break-word;">Add the Proxima MCP server to this application’s MCP configuration.
 
-Proxima is a Multi-AI MCP server that connects ChatGPT, Claude, Gemini & Perplexity with local server.
+Proxima is a Multi-AI MCP server that connects ChatGPT, Claude, Gemini, Perplexity, Kimi, MiniMax, MiMo, Qwen, Z.ai and DeepSeek with local server.
 
 Here is the MCP configuration to add:
 
@@ -1708,12 +1756,22 @@ ws.onmessage = (e) => console.log(JSON.parse(e.data));</code>
         }
 
         // Navigation controls
-        function goBack() {
-            // Will be handled by browser view
+        async function goBack() {
+            if (currentTab && currentTab !== 'settings') {
+                const result = await agentHub.goBack(currentTab);
+                if (!result || !result.success) {
+                    showToast('Tidak ada halaman sebelumnya');
+                }
+            }
         }
 
-        function goForward() {
-            // Will be handled by browser view
+        async function goForward() {
+            if (currentTab && currentTab !== 'settings') {
+                const result = await agentHub.goForward(currentTab);
+                if (!result || !result.success) {
+                    showToast('Tidak ada halaman berikutnya');
+                }
+            }
         }
 
         // Open in system browser (for Google login issues)

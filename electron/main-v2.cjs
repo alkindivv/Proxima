@@ -56,7 +56,10 @@ const responseState = {
     gemini: { fingerprint: '' },
     kimi: { fingerprint: '' },
     minimax: { fingerprint: '' },
-    mimo: { fingerprint: '' }
+    mimo: { fingerprint: '' },
+    qwen: { fingerprint: '' },
+    zai: { fingerprint: '' },
+    deepseek: { fingerprint: '' }
 };
 
 // Default settings
@@ -68,7 +71,10 @@ const defaultSettings = {
         gemini: { enabled: true, loggedIn: false },
         kimi: { enabled: false, loggedIn: false },
         minimax: { enabled: false, loggedIn: false },
-        mimo: { enabled: false, loggedIn: false }
+        mimo: { enabled: false, loggedIn: false },
+        qwen: { enabled: false, loggedIn: false },
+        zai: { enabled: false, loggedIn: false },
+        deepseek: { enabled: false, loggedIn: false }
     },
     ipcPort: 19222, // Port for MCP server IPC communication
     theme: 'dark',
@@ -202,7 +208,10 @@ async function restoreCookies(provider, ses) {
             gemini: { domain: 'google.com', authCookies: ['SID', 'HSID', 'SSID', '__Secure-1PSID', '__Secure-3PSID'] },
             kimi: { domain: 'kimi.com', authCookies: ['session', 'token', 'auth', 'access'] },
             minimax: { domain: 'minimax.io', authCookies: ['session', 'token', 'auth', 'access'] },
-            mimo: { domain: 'xiaomimimo.com', authCookies: ['session', 'token', 'auth', 'access'] }
+            mimo: { domain: 'xiaomimimo.com', authCookies: ['session', 'token', 'auth', 'access'] },
+            qwen: { domain: 'qwen.ai', authCookies: ['session', 'token', 'auth', 'access'] },
+            zai: { domain: 'z.ai', authCookies: ['session', 'token', 'auth', 'access'] },
+            deepseek: { domain: 'deepseek.com', authCookies: ['session', 'token', 'auth', 'access'] }
         };
         const authConfig = providerAuthDomains[provider];
         if (authConfig) {
@@ -790,6 +799,9 @@ async function sendMessageToProvider(provider, message, forceDOM = false) {
         case 'kimi':
         case 'minimax':
         case 'mimo':
+        case 'qwen':
+        case 'zai':
+        case 'deepseek':
             return await sendToModernProvider(webContents, provider, message);
         default:
             throw new Error(`Unknown provider: ${provider}`);
@@ -1209,27 +1221,85 @@ async function sendToModernProvider(webContents, provider, message) {
 
     await sleep(500);
 
-    const inputFound = await webContents.executeJavaScript(`
-        (function() {
-            const selectors = [
-                'textarea',
-                '[contenteditable="true"]',
-                '.ql-editor',
-                'rich-textarea .ql-editor',
-                'rich-textarea [contenteditable="true"]',
-                'input[type="text"]'
-            ];
-            for (const selector of selectors) {
-                const input = document.querySelector(selector);
-                if (input && input.offsetParent !== null) {
-                    input.focus();
-                    input.click();
-                    return { found: true, selector };
+    if (provider === 'qwen') {
+        const qwenReady = await webContents.executeJavaScript(`
+            (function() {
+                const input = document.querySelector('textarea.message-input-textarea, textarea');
+                if (!input || input.offsetParent === null) return { found: false };
+                input.focus();
+                input.click();
+                input.value = '';
+                input.dispatchEvent(new Event('input', { bubbles: true }));
+                return { found: true };
+            })()
+        `).catch(() => ({ found: false }));
+
+        if (!qwenReady.found) {
+            return { sent: false, error: 'No Qwen input field found' };
+        }
+
+        await sleep(250);
+
+        try {
+            if (typeof webContents.insertText === 'function') {
+                await webContents.insertText(message);
+            } else {
+                for (const ch of message) {
+                    await webContents.sendInputEvent({ type: 'char', keyCode: ch });
                 }
             }
-            return { found: false };
-        })()
-    `);
+        } catch (e) {
+            return { sent: false, error: `Failed typing into Qwen: ${e.message}` };
+        }
+
+        await sleep(400);
+
+        const qwenClicked = await webContents.executeJavaScript(`
+            (function() {
+                const btn = document.querySelector('button.send-button');
+                if (btn && !btn.disabled && (btn.offsetParent !== null || btn.getClientRects().length > 0)) {
+                    btn.click();
+                    return { clicked: true };
+                }
+                return { clicked: false };
+            })()
+        `).catch(() => ({ clicked: false }));
+
+        if (!qwenClicked.clicked) {
+            await webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Enter' });
+            await webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Enter' });
+        }
+
+        return { sent: true };
+    }
+
+    let inputFound = { found: false };
+    for (let attempt = 0; attempt < 8; attempt++) {
+        inputFound = await webContents.executeJavaScript(`
+            (function() {
+                const selectors = [
+                    'textarea',
+                    '[contenteditable="true"]',
+                    '.ql-editor',
+                    'rich-textarea .ql-editor',
+                    'rich-textarea [contenteditable="true"]',
+                    'input[type="text"]'
+                ];
+                for (const selector of selectors) {
+                    const input = document.querySelector(selector);
+                    if (input && input.offsetParent !== null) {
+                        input.focus();
+                        input.click();
+                        return { found: true, selector };
+                    }
+                }
+                return { found: false };
+            })()
+        `).catch(() => ({ found: false }));
+
+        if (inputFound.found) break;
+        await sleep(750);
+    }
 
     if (!inputFound.found) {
         return { sent: false, error: 'No input field found' };
@@ -1320,6 +1390,22 @@ async function sendToModernProvider(webContents, provider, message) {
                 }
             }
 
+            if (window.location.host.includes('qwen.ai')) {
+                const qwenBtn = document.querySelector('button.send-button');
+                if (qwenBtn && visible(qwenBtn) && !qwenBtn.disabled) {
+                    qwenBtn.click();
+                    return { clicked: true, method: 'qwen-send-button' };
+                }
+            }
+
+            if (window.location.host.includes('z.ai')) {
+                const zaiBtn = document.querySelector('button.sendMessageButton');
+                if (zaiBtn && visible(zaiBtn) && !zaiBtn.disabled) {
+                    zaiBtn.click();
+                    return { clicked: true, method: 'zai-send-button' };
+                }
+            }
+
             const buttons = Array.from(document.querySelectorAll('button')).filter(btn => visible(btn) && !btn.disabled);
             const sendButton = buttons.find(btn => {
                 const label = ((btn.getAttribute('aria-label') || '') + ' ' + (btn.innerText || '') + ' ' + (btn.getAttribute('data-track-id') || '')).toLowerCase();
@@ -1377,7 +1463,13 @@ async function waitForSendButtonReady(provider) {
                 } else if (host.includes('perplexity')) {
                     sendBtn = document.querySelector('button[aria-label*="Submit"]') ||
                               document.querySelector('button[type="submit"]');
-                } else if (host.includes('kimi') || host.includes('minimax') || host.includes('xiaomimimo')) {
+                } else if (host.includes('qwen.ai')) {
+                    sendBtn = document.querySelector('button.send-button') ||
+                              document.querySelector('button[type="submit"]');
+                } else if (host.includes('z.ai')) {
+                    sendBtn = document.querySelector('button.sendMessageButton') ||
+                              document.querySelector('button[type="submit"]');
+                } else if (host.includes('kimi') || host.includes('minimax') || host.includes('xiaomimimo') || host.includes('qwen') || host.includes('z.ai') || host.includes('deepseek')) {
                     const buttons = Array.from(document.querySelectorAll('button'));
                     sendBtn = buttons.find(btn => {
                         const label = ((btn.getAttribute('aria-label') || '') + ' ' + (btn.innerText || '')).toLowerCase();
@@ -1546,7 +1638,7 @@ async function getResponseWithTypingStatus(provider) {
             `).catch(() => '');
             responseState.gemini.fingerprint = oldFp;
             console.log(`[Gemini] Captured old response fingerprint: ${oldFp.substring(0, 50)}...`);
-        } else if (provider === 'kimi' || provider === 'minimax' || provider === 'mimo') {
+        } else if (provider === 'kimi' || provider === 'minimax' || provider === 'mimo' || provider === 'qwen' || provider === 'zai' || provider === 'deepseek') {
             const oldFp = await webContents.executeJavaScript(`
                 (function() {
                     const selectors = [
@@ -1613,7 +1705,7 @@ async function getProviderResponse(provider, customSelector = null) {
         oldFingerprint = responseState.chatgpt.fingerprint || '';
     } else if (provider === 'gemini') {
         oldFingerprint = responseState.gemini.fingerprint || '';
-    } else if (provider === 'kimi' || provider === 'minimax' || provider === 'mimo') {
+    } else if (provider === 'kimi' || provider === 'minimax' || provider === 'mimo' || provider === 'qwen' || provider === 'zai' || provider === 'deepseek') {
         oldFingerprint = responseState[provider].fingerprint || '';
     }
 
@@ -1632,7 +1724,7 @@ async function getProviderResponse(provider, customSelector = null) {
             const typingNow = await isAITyping(provider);
             if (typingNow.isTyping) {
                 typingDetected = true;
-            } else if (provider === 'perplexity' || provider === 'gemini' || provider === 'kimi' || provider === 'minimax' || provider === 'mimo') {
+            } else if (provider === 'perplexity' || provider === 'gemini' || provider === 'kimi' || provider === 'minimax' || provider === 'mimo' || provider === 'qwen' || provider === 'zai' || provider === 'deepseek') {
                 // May not have started typing yet — retry a few times
                 for (let retry = 0; retry < 6; retry++) {
                     await sleep(500);
@@ -2243,7 +2335,7 @@ async function getProviderResponse(provider, customSelector = null) {
                 }
 
                 // Kimi / MiniMax / MiMo - generic modern chat extraction
-                if (host.includes('kimi') || host.includes('minimax') || host.includes('xiaomimimo')) {
+                if (host.includes('kimi') || host.includes('minimax') || host.includes('xiaomimimo') || host.includes('qwen') || host.includes('z.ai') || host.includes('deepseek')) {
                     const selectors = [
                         '[data-message-author-role="assistant"]',
                         '[data-testid*="assistant"]',
@@ -2419,10 +2511,13 @@ async function startNewConversation(provider) {
         }
     }
 
-    // Navigate to provider home page to start fresh UI
+    // Navigate to provider home/chat page to start fresh UI
     const config = browserManager.providers[provider];
     if (config) {
         await browserManager.navigate(provider, config.url);
+        if (provider === 'mimo') {
+            await sleep(4000);
+        }
     }
 }
 
@@ -2598,7 +2693,7 @@ async function isAITyping(provider) {
                 }
 
                 // Kimi / MiniMax / MiMo typing detection
-                if (host.includes('kimi') || host.includes('minimax') || host.includes('xiaomimimo')) {
+                if (host.includes('kimi') || host.includes('minimax') || host.includes('xiaomimimo') || host.includes('qwen') || host.includes('z.ai') || host.includes('deepseek')) {
                     const stopButton = document.querySelector('button[aria-label*="Stop"], button[aria-label*="stop"]');
                     if (stopButton && stopButton.offsetParent !== null) {
                         return { isTyping: true, provider: host };
@@ -2723,6 +2818,24 @@ ipcMain.handle('reload-provider', async (event, provider) => {
     }
 });
 
+ipcMain.handle('go-back', async (event, provider) => {
+    try {
+        const ok = await browserManager.goBack(provider);
+        return { success: ok, provider, error: ok ? null : 'No back history available' };
+    } catch (e) {
+        return { success: false, error: e.message };
+    }
+});
+
+ipcMain.handle('go-forward', async (event, provider) => {
+    try {
+        const ok = await browserManager.goForward(provider);
+        return { success: ok, provider, error: ok ? null : 'No forward history available' };
+    } catch (e) {
+        return { success: false, error: e.message };
+    }
+});
+
 ipcMain.handle('get-mcp-config', () => {
     const resourcesPath = process.resourcesPath || path.join(__dirname, '..');
     const unpackedPath = path.join(resourcesPath, 'app.asar.unpacked', 'src', 'mcp-server-v3.js');
@@ -2763,7 +2876,10 @@ ipcMain.handle('open-in-system-browser', (event, provider) => {
         perplexity: 'https://www.perplexity.ai/',
         chatgpt: 'https://chat.openai.com/',
         claude: 'https://claude.ai/',
-        gemini: 'https://gemini.google.com/'
+        gemini: 'https://gemini.google.com/',
+        qwen: 'https://chat.qwen.ai/',
+        zai: 'https://z.ai/',
+        deepseek: 'https://chat.deepseek.com/'
     };
     if (urls[provider]) {
         shell.openExternal(urls[provider]);
@@ -2893,7 +3009,10 @@ ipcMain.handle('get-cookies', async (event, provider) => {
             gemini: 'google.com',
             kimi: 'kimi.com',
             minimax: 'minimax.io',
-            mimo: 'xiaomimimo.com'
+            mimo: 'xiaomimimo.com',
+            qwen: 'qwen.ai',
+            zai: 'z.ai',
+            deepseek: 'deepseek.com'
         };
 
         const domain = providerDomains[provider];

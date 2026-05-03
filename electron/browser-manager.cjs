@@ -44,9 +44,24 @@ class BrowserManager {
                 color: '#f97316'
             },
             mimo: {
-                url: 'https://aistudio.xiaomimimo.com/',
+                url: 'https://aistudio.xiaomimimo.com/#/c',
                 partition: 'persist:mimo',
                 color: '#2563eb'
+            },
+            qwen: {
+                url: 'https://chat.qwen.ai/',
+                partition: 'persist:qwen',
+                color: '#ef4444'
+            },
+            zai: {
+                url: 'https://z.ai/',
+                partition: 'persist:zai',
+                color: '#14b8a6'
+            },
+            deepseek: {
+                url: 'https://chat.deepseek.com/',
+                partition: 'persist:deepseek',
+                color: '#4f46e5'
             }
         };
 
@@ -447,7 +462,10 @@ class BrowserManager {
                 gemini: 'gemini.google.com',
                 kimi: 'kimi.com',
                 minimax: 'minimax.io',
-                mimo: 'xiaomimimo.com'
+                mimo: 'xiaomimimo.com',
+                qwen: 'qwen.ai',
+                zai: 'z.ai',
+                deepseek: 'deepseek.com'
             };
 
             const domain = providerDomains[provider];
@@ -545,19 +563,49 @@ class BrowserManager {
     }
 
     async navigate(provider, url) {
+        const tryLoad = async (wc, targetUrl) => {
+            try {
+                await wc.loadURL(targetUrl);
+            } catch (e) {
+                const msg = String(e && e.message ? e.message : e);
+                if (msg.includes('(-3) loading')) {
+                    return;
+                }
+                throw e;
+            }
+        };
+
         const webContents = this.getWebContents(provider);
         if (!webContents) {
             this.createView(provider);
             const newWebContents = this.getWebContents(provider);
-            if (newWebContents) await newWebContents.loadURL(url);
+            if (newWebContents) await tryLoad(newWebContents, url);
             return;
         }
-        await webContents.loadURL(url);
+        await tryLoad(webContents, url);
     }
 
     async reload(provider) {
         const webContents = this.getWebContents(provider);
         if (webContents) await webContents.reload();
+    }
+
+    async goBack(provider) {
+        const webContents = this.getWebContents(provider);
+        if (webContents && webContents.canGoBack()) {
+            webContents.goBack();
+            return true;
+        }
+        return false;
+    }
+
+    async goForward(provider) {
+        const webContents = this.getWebContents(provider);
+        if (webContents && webContents.canGoForward()) {
+            webContents.goForward();
+            return true;
+        }
+        return false;
     }
 
     async isLoggedIn(provider) {
@@ -606,6 +654,9 @@ class BrowserManager {
                 case 'kimi':
                 case 'minimax':
                 case 'mimo':
+                case 'qwen':
+                case 'zai':
+                case 'deepseek':
                     return await webContents.executeJavaScript(`
                         (function() {
                             const hasInput = !!document.querySelector('textarea') ||

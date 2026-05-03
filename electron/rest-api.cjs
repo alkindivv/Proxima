@@ -31,6 +31,9 @@ const MODEL_ALIASES = {
     'kimi': 'kimi', 'moonshot': 'kimi', 'kimi-k2': 'kimi',
     'minimax': 'minimax', 'mini-max': 'minimax', 'abab': 'minimax',
     'mimo': 'mimo', 'xiaomi': 'mimo', 'xiaomimimo': 'mimo',
+    'qwen': 'qwen', 'qwen-chat': 'qwen', 'tongyi': 'qwen', 'qwen3': 'qwen',
+    'zai': 'zai', 'z.ai': 'zai', 'glm': 'zai', 'glm-5': 'zai',
+    'deepseek': 'deepseek', 'deep-seek': 'deepseek', 'deepseek-chat': 'deepseek',
 
     'auto': 'auto',   // Auto-pick best available
     'all': 'all'       // Query all providers
@@ -189,7 +192,7 @@ function pickBestProvider(preferred) {
         if (enabled.includes(preferred)) return preferred;
         return null;
     }
-    return ['claude', 'chatgpt', 'gemini', 'perplexity', 'kimi', 'minimax', 'mimo'].find(p => enabled.includes(p)) || null;
+    return ['claude', 'chatgpt', 'gemini', 'perplexity', 'kimi', 'minimax', 'mimo', 'qwen', 'zai', 'deepseek'].find(p => enabled.includes(p)) || null;
 }
 
 function extractMessage(body) {
@@ -470,7 +473,7 @@ function getDocsPage() {
             <div class="logo">⚡ Proxima API</div>
             <p class="sub">Unified AI Gateway · Port ${REST_PORT} · v${VERSION}</p>
             <div class="chips">
-                ${['perplexity', 'chatgpt', 'claude', 'gemini'].map(p =>
+                ${['perplexity', 'chatgpt', 'claude', 'gemini', 'kimi', 'minimax', 'mimo', 'qwen', 'zai', 'deepseek'].map(p =>
         `<div class="chip ${enabled.includes(p) ? 'on' : 'off'}"><div class="d"></div>${p[0].toUpperCase() + p.slice(1)}</div>`
     ).join('')}
             </div>
@@ -519,6 +522,12 @@ POST /v1/chat/completions
                 <div class="model-item" style="border:1px solid rgba(249,115,22,.15)">claude · sonnet · anthropic</div>
                 <div class="model-item" style="border:1px solid rgba(59,130,246,.15)">gemini · google · bard</div>
                 <div class="model-item" style="border:1px solid rgba(168,85,247,.15)">perplexity · pplx · sonar</div>
+                <div class="model-item" style="border:1px solid rgba(124,58,237,.15)">kimi · moonshot · kimi-k2</div>
+                <div class="model-item" style="border:1px solid rgba(249,115,22,.15)">minimax · mini-max · abab</div>
+                <div class="model-item" style="border:1px solid rgba(37,99,235,.15)">mimo · xiaomi · xiaomimimo</div>
+                <div class="model-item" style="border:1px solid rgba(239,68,68,.15)">qwen · qwen-chat · tongyi</div>
+                <div class="model-item" style="border:1px solid rgba(20,184,166,.15)">zai · z.ai · glm</div>
+                <div class="model-item" style="border:1px solid rgba(79,70,229,.15)">deepseek · deepseek-chat</div>
                 <div class="model-item">auto → best available</div>
             </div>
         </div>
@@ -1255,7 +1264,7 @@ End with a security score (0-100).`;
             aliases: Object.entries(MODEL_ALIASES).filter(([_, v]) => v === p).map(([k]) => k).filter(k => k !== p)
         }));
         // Also show disabled ones
-        const allProviders = ['chatgpt', 'claude', 'gemini', 'perplexity'];
+        const allProviders = ['chatgpt', 'claude', 'gemini', 'perplexity', 'kimi', 'minimax', 'mimo', 'qwen', 'zai', 'deepseek'];
         allProviders.filter(p => !enabled.includes(p)).forEach(p => {
             models.push({
                 id: p, object: 'model', owned_by: 'proxima', status: 'disabled',
