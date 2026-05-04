@@ -1075,7 +1075,7 @@ async function sendToClaude(webContents, message) {
 }
 
 async function installProviderNetworkResponseCapture(webContents, provider) {
-    if (!['qwen', 'deepseek'].includes(provider)) return;
+    if (!['qwen', 'deepseek', 'zai'].includes(provider)) return;
 
     await webContents.executeJavaScript(String.raw`
         (() => {
@@ -1201,19 +1201,41 @@ async function installProviderNetworkResponseCapture(webContents, provider) {
                 return '';
             }
 
+            function extractZaiFromStream(text) {
+                try {
+                    let answer = '';
+                    for (const block of sseBlocks(text)) {
+                        const raw = ssePayload(block);
+                        if (!raw || raw === '[DONE]') continue;
+                        let obj = null;
+                        try { obj = JSON.parse(raw); } catch (e) { continue; }
+                        const data = obj && obj.data ? obj.data : null;
+                        if (data && data.phase === 'answer' && typeof data.delta_content === 'string') {
+                            answer += data.delta_content;
+                        }
+                    }
+                    return answer.trim();
+                } catch (e) {}
+                return '';
+            }
+
             function processPayload(url, text) {
                 const normalizedUrl = String(url || '');
-                if (normalizedUrl.includes('/api/v2/chat/completions')) {
+                if (provider === 'qwen' && normalizedUrl.includes('/api/v2/chat/completions')) {
                     const answer = extractQwenFromStream(text);
                     if (answer) store('qwen', normalizedUrl, answer);
                 }
-                if (normalizedUrl.includes('/api/v2/chats/')) {
+                if (provider === 'qwen' && normalizedUrl.includes('/api/v2/chats/')) {
                     const answer = extractQwenFromChatDetail(text);
                     if (answer) store('qwen', normalizedUrl, answer);
                 }
-                if (normalizedUrl.includes('/api/v0/chat/completion')) {
+                if (provider === 'deepseek' && normalizedUrl.includes('/api/v0/chat/completion')) {
                     const answer = extractDeepSeekFromStream(text);
                     if (answer) store('deepseek', normalizedUrl, answer);
+                }
+                if (provider === 'zai' && normalizedUrl.includes('/api/v2/chat/completions')) {
+                    const answer = extractZaiFromStream(text);
+                    if (answer) store('zai', normalizedUrl, answer);
                 }
             }
 
@@ -1266,7 +1288,7 @@ async function installProviderNetworkResponseCapture(webContents, provider) {
 }
 
 async function waitForProviderNetworkResponse(webContents, provider, timeoutMs = 15000) {
-    if (!['qwen', 'deepseek'].includes(provider)) return '';
+    if (!['qwen', 'deepseek', 'zai'].includes(provider)) return '';
 
     const started = Date.now();
     while (Date.now() - started < timeoutMs) {
@@ -1497,7 +1519,7 @@ async function sendToModernProvider(webContents, provider, message) {
 
     await sleep(500);
 
-    if (provider === 'qwen' || provider === 'deepseek') {
+    if (provider === 'qwen' || provider === 'deepseek' || provider === 'zai') {
         await installProviderNetworkResponseCapture(webContents, provider);
     }
 
@@ -1641,6 +1663,109 @@ async function sendToModernProvider(webContents, provider, message) {
         const deepseekNetworkResponse = await waitForProviderNetworkResponse(webContents, 'deepseek', 18000);
         if (deepseekNetworkResponse) {
             return { sent: true, response: deepseekNetworkResponse };
+        }
+
+        return { sent: true };
+    }
+
+    if (provider === 'zai') {
+        const zaiReady = await webContents.executeJavaScript(`
+            (function() {
+                const input = document.querySelector('textarea[placeholder*="Send a Message"], textarea');
+                if (!input || input.offsetParent === null) return { found: false };
+                input.focus();
+                input.click();
+                return { found: true };
+            })()
+        `).catch(() => ({ found: false }));
+
+        if (!zaiReady.found) {
+            return { sent: false, error: 'No Z.ai input field found' };
+        }
+
+        await webContents.sendInputEvent({ type: 'keyDown', keyCode: 'A', modifiers: ['control'] });
+        await webContents.sendInputEvent({ type: 'keyUp', keyCode: 'A', modifiers: ['control'] });
+        await webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Backspace' });
+        await webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Backspace' });
+        await sleep(150);
+
+        if (typeof webContents.insertText === 'function') {
+            await webContents.insertText(message);
+        } else {
+            for (const ch of message) {
+                await webContents.sendInputEvent({ type: 'char', keyCode: ch });
+                if (ch === '\n') {
+                    await sleep(20);
+                }
+            }
+        }
+
+        await sleep(500);
+
+        const zaiTyped = await webContents.executeJavaScript(`
+            (function() {
+                const input = document.querySelector('textarea[placeholder*="Send a Message"], textarea');
+                const btn = document.querySelector('button.sendMessageButton, #send-message-button, button[type="submit"]');
+                return {
+                    value: input ? (input.value || '') : '',
+                    href: location.href,
+                    buttonVisible: !!(btn && (btn.offsetParent !== null || btn.getClientRects().length > 0)),
+                    buttonDisabled: !!(btn && btn.disabled)
+                };
+            })()
+        `).catch(() => ({ value: '' }));
+
+        if (!zaiTyped.value || !zaiTyped.value.includes(message.substring(0, Math.min(16, message.length)))) {
+            return { sent: false, error: 'Z.ai trusted typing did not populate the composer' };
+        }
+
+        const zaiSubmit = await webContents.executeJavaScript(`
+            (function() {
+                const input = document.querySelector('textarea[placeholder*="Send a Message"], textarea');
+                const form = input ? input.closest('form') : null;
+                const btn = document.querySelector('button.sendMessageButton, #send-message-button, button[type="submit"]');
+                if (btn && !btn.disabled && (btn.offsetParent !== null || btn.getClientRects().length > 0)) {
+                    btn.click();
+                }
+                if (form) {
+                    form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+                    if (typeof form.requestSubmit === 'function') form.requestSubmit(btn || undefined);
+                }
+                return { submitted: true };
+            })()
+        `).catch(e => ({ submitted: false, error: e.message }));
+
+        if (!zaiSubmit.submitted) {
+            return { sent: false, error: zaiSubmit.error || 'Failed to submit Z.ai form' };
+        }
+
+        const zaiNetworkResponse = await waitForProviderNetworkResponse(webContents, 'zai', 20000);
+        if (zaiNetworkResponse) {
+            return { sent: true, response: zaiNetworkResponse };
+        }
+
+        await sleep(2500);
+        const zaiSentState = await webContents.executeJavaScript(`
+            (function() {
+                const input = document.querySelector('textarea[placeholder*="Send a Message"], textarea');
+                const body = document.body?.innerText || '';
+                return {
+                    href: location.href,
+                    value: input ? (input.value || '') : '',
+                    includes: body.includes(${JSON.stringify(message.substring(0, Math.min(16, message.length)))}),
+                    noResponseError: /No response,? Please try again later\./i.test(body),
+                    body: body.slice(0, 1200)
+                };
+            })()
+        `).catch(() => ({ href: '', value: '' }));
+
+        const likelySent = (zaiSentState.href && zaiSentState.href.includes('/c/')) || zaiSentState.includes || zaiSentState.value === '';
+        if (!likelySent) {
+            return { sent: false, error: 'Z.ai submit did not change page state' };
+        }
+
+        if (zaiSentState.noResponseError) {
+            return { sent: false, error: 'Z.ai returned: No response, Please try again later.' };
         }
 
         return { sent: true };
@@ -1990,7 +2115,7 @@ async function getResponseWithTypingStatus(provider) {
         throw new Error(`Provider ${provider} not initialized`);
     }
 
-    if (provider === 'qwen' || provider === 'deepseek') {
+    if (provider === 'qwen' || provider === 'deepseek' || provider === 'zai') {
         const networkCaptured = await webContents.executeJavaScript(`
             (function() {
                 const root = window.__proximaResponseCapture || {};
