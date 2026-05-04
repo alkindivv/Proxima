@@ -1,0 +1,168 @@
+#!/usr/bin/env python3
+"""
+Proxima MCP client wrapper.
+
+Modes:
+1. Raw Agent Hub request mode (legacy helper scripts)
+   - Reads one JSON line with keys like action/provider/data
+   - Forwards to raw TCP daemon on :19223 and returns one response line
+
+2. MCP stdio proxy mode (IDE / Inspector compatible)
+   - Detects JSON-RPC messages like {"jsonrpc":"2.0","method":"initialize",...}
+   - Opens a persistent TCP connection to the MCP stdio daemon on :19224
+   - Proxies stdin <-> socket and socket <-> stdout until the session ends
+"""
+
+import json
+import signal
+import socket
+import sys
+import threading
+
+RAW_DAEMON_HOST = '127.0.0.1'
+RAW_DAEMON_PORT = 19223
+MCP_DAEMON_HOST = '127.0.0.1'
+MCP_DAEMON_PORT = 19224
+CONNECT_TIMEOUT = 10
+READ_TIMEOUT = 300
+
+
+def is_mcp_jsonrpc(payload):
+    return (
+        isinstance(payload, dict)
+        and payload.get('jsonrpc') == '2.0'
+        and ('method' in payload or 'id' in payload or 'result' in payload or 'error' in payload)
+    )
+
+
+def run_raw_mode(first_line, payload):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(READ_TIMEOUT)
+    try:
+        sock.connect((RAW_DAEMON_HOST, RAW_DAEMON_PORT))
+    except Exception as e:
+        sys.stderr.write(f"proxima-mcp: cannot connect to raw daemon: {e}\n")
+        sys.stderr.flush()
+        return 1
+
+    try:
+        sock.sendall((first_line + '\n').encode())
+        buffer = b''
+        while True:
+            try:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                buffer += chunk
+                if b'\n' in buffer:
+                    parts = buffer.split(b'\n')
+                    for i in range(len(parts) - 1):
+                        line = parts[i]
+                        if not line.strip():
+                            continue
+                        try:
+                            parsed = json.loads(line.decode('utf-8'))
+                            if 'requestId' in parsed:
+                                sys.stdout.write(line.decode('utf-8') + '\n')
+                                sys.stdout.flush()
+                                return 0
+                        except Exception:
+                            pass
+                    buffer = parts[-1]
+            except socket.timeout:
+                sys.stderr.write('timeout\n')
+                sys.stderr.flush()
+                return 1
+    finally:
+        try:
+            sock.close()
+        except Exception:
+            pass
+    return 0
+
+
+def run_mcp_mode(first_line):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(None)
+    try:
+        sock.connect((MCP_DAEMON_HOST, MCP_DAEMON_PORT))
+    except Exception as e:
+        sys.stderr.write(f"proxima-mcp: cannot connect to mcp daemon: {e}\n")
+        sys.stderr.flush()
+        return 1
+
+    stop = threading.Event()
+
+    def socket_to_stdout():
+        try:
+            while not stop.is_set():
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                sys.stdout.buffer.write(chunk)
+                sys.stdout.buffer.flush()
+        except Exception:
+            pass
+        finally:
+            stop.set()
+
+    recv_thread = threading.Thread(target=socket_to_stdout, daemon=True)
+    recv_thread.start()
+
+    try:
+        sock.sendall((first_line + '\n').encode('utf-8'))
+
+        while not stop.is_set():
+            chunk = sys.stdin.buffer.read1(4096)
+            if not chunk:
+                try:
+                    sock.shutdown(socket.SHUT_WR)
+                except Exception:
+                    pass
+                break
+            sock.sendall(chunk)
+    except BrokenPipeError:
+        pass
+    except Exception as e:
+        sys.stderr.write(f"proxima-mcp: proxy error: {e}\n")
+        sys.stderr.flush()
+        stop.set()
+        try:
+            sock.close()
+        except Exception:
+            pass
+        return 1
+
+    recv_thread.join(timeout=READ_TIMEOUT)
+    stop.set()
+    try:
+        sock.close()
+    except Exception:
+        pass
+    return 0
+
+
+def main():
+    first_line = sys.stdin.readline()
+    if not first_line:
+        return 0
+    first_line = first_line.strip()
+    if not first_line:
+        return 0
+
+    try:
+        payload = json.loads(first_line)
+    except json.JSONDecodeError as e:
+        sys.stderr.write(f"proxima-mcp: invalid JSON: {e}\n")
+        sys.stderr.flush()
+        return 1
+
+    if is_mcp_jsonrpc(payload):
+        return run_mcp_mode(first_line)
+
+    return run_raw_mode(first_line, payload)
+
+
+if __name__ == '__main__':
+    signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+    sys.exit(main())

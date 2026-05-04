@@ -1,0 +1,41 @@
+[Unit]
+Description=Proxima TCP Daemon — relay between IDE clients and Electron Agent Hub
+After=network.target proxima-app.service
+Wants=proxima-app.service
+StartLimitBurst=10
+StartLimitIntervalSec=60
+
+[Service]
+Type=simple
+User=proxima
+Group=proxima
+WorkingDirectory=/Proxima/src
+Environment=NODE_PATH=/Proxima/node_modules
+Environment=PROXIMA_DAEMON_PORT=19223
+Environment=PROXIMA_HUB_PORT=19222
+Environment=MAX_CONCURRENT=20
+Environment=IDLE_TIMEOUT=120000
+Environment=REQUEST_TIMEOUT=180000
+Environment=REPORT_STATS=true
+
+ExecStart=/usr/local/bin/node /Proxima/src/proxima-tcp-daemon.js
+
+# Logging
+StandardOutput=null
+StandardError=journal
+
+# Restart policy
+Restart=always
+RestartSec=3
+
+# Security hardening
+NoNewPrivileges=false
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/Proxima /tmp
+
+# Allow binding to priviledged ports if needed
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+[Install]
+WantedBy=multi-user.target
