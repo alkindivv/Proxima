@@ -530,6 +530,7 @@ async function handleMCPRequest(request) {
                 return { success: true, provider, loggedIn };
 
             case 'sendMessage':
+            case 'send-message':
                 // Check if file should be uploaded
                 if (data.filePath && fileReferenceEnabled) {
                     try {
@@ -635,6 +636,7 @@ async function handleMCPRequest(request) {
                 return { success: true, provider, ...typingStatus };
 
             case 'getResponseWithTyping':
+            case 'get-response-with-typing':
                 // Smart response capture - waits for typing to start and stop
                 const smartResponse = await getResponseWithTypingStatus(provider);
                 return {
@@ -646,11 +648,36 @@ async function handleMCPRequest(request) {
                 };
 
             case 'waitForSendButton':
+            case 'wait-for-send-button':
                 // Wait for send button to be visible and enabled
                 const buttonReady = await waitForSendButtonReady(provider);
                 return { success: true, provider, ready: buttonReady };
 
+            case 'readClipboard':
+            case 'read-clipboard':
+                return { success: true, text: clipboard.readText() };
+
+            case 'readProviderClipboard':
+            case 'read-provider-clipboard':
+            case 'get-provider-clipboard': {
+                const providerWebContents = browserManager.getWebContents(provider);
+                if (!providerWebContents || providerWebContents.isDestroyed()) {
+                    return { success: false, error: 'Provider view not available' };
+                }
+                const text = await providerWebContents.executeJavaScript(`
+                    (async () => {
+                        try {
+                            return await navigator.clipboard.readText();
+                        } catch (e) {
+                            return 'CLIPBOARD_ERR:' + e.message;
+                        }
+                    })()
+                `).catch(e => 'CLIPBOARD_ERR:' + e.message);
+                return { success: true, provider, text, systemClipboard: clipboard.readText() };
+            }
+
             case 'executeScript':
+            case 'execute-script':
                 const scriptResult = await browserManager.executeScript(provider, data.script);
                 return { success: true, provider, result: scriptResult };
 
@@ -770,9 +797,15 @@ async function sendMessageToProvider(provider, message, forceDOM = false) {
             console.log(`[${provider}] Trying API-first approach...`);
             const apiResponse = await providerAPI.sendViaAPI(provider, webContents, message);
             if (apiResponse && apiResponse.length > 0) {
-                console.log(`[${provider}] \u2714 API response captured (${apiResponse.length} chars)`);
-                _apiResponseCache[provider] = apiResponse;
-                return { response: apiResponse };
+                const looksLikeGeminiConversationId = provider === 'gemini' && /^c_[a-f0-9]+$/i.test((apiResponse || '').trim());
+                if (looksLikeGeminiConversationId) {
+                    console.log(`[${provider}] API returned conversation id (${apiResponse}) — falling back to DOM send`);
+                    delete _apiResponseCache[provider];
+                } else {
+                    console.log(`[${provider}] \u2714 API response captured (${apiResponse.length} chars)`);
+                    _apiResponseCache[provider] = apiResponse;
+                    return { response: apiResponse };
+                }
             }
             console.log(`[${provider}] API returned empty \u2014 falling back to DOM`);
             delete _apiResponseCache[provider];
@@ -1041,6 +1074,247 @@ async function sendToClaude(webContents, message) {
     return { sent: true };
 }
 
+async function installProviderNetworkResponseCapture(webContents, provider) {
+    if (!['qwen', 'deepseek', 'zai'].includes(provider)) return;
+
+    await webContents.executeJavaScript(String.raw`
+        (() => {
+            const provider = ${JSON.stringify(provider)};
+            const storeRoot = window.__proximaResponseCapture = window.__proximaResponseCapture || {};
+            storeRoot[provider] = {
+                response: '',
+                done: false,
+                source: '',
+                updatedAt: Date.now()
+            };
+
+            const safeTrim = value => typeof value === 'string' ? value.trim() : '';
+            const cleanSseText = value => String(value || '').replace(/\r/g, '');
+            const sseBlocks = value => cleanSseText(value).split('\n\n').filter(Boolean);
+            const sseDataLine = block => String(block || '').split('\n').find(part => safeTrim(part).startsWith('data:')) || '';
+            const ssePayload = block => {
+                const line = sseDataLine(block);
+                return line ? line.replace(/^data:\s*/, '').trim() : '';
+            };
+
+            function store(providerName, url, response) {
+                const trimmed = safeTrim(response);
+                if (!trimmed) return;
+                storeRoot[providerName] = {
+                    response: trimmed,
+                    done: true,
+                    source: String(url || ''),
+                    updatedAt: Date.now()
+                };
+            }
+
+            function extractQwenFromChatDetail(text) {
+                try {
+                    const obj = JSON.parse(text);
+                    const data = obj && obj.data ? obj.data : {};
+                    const history = data.chat && data.chat.history && data.chat.history.messages ? data.chat.history.messages : {};
+                    const messages = Array.isArray(data.messages) ? data.messages : Object.values(history || {});
+                    for (let i = messages.length - 1; i >= 0; i--) {
+                        const msg = messages[i] || {};
+                        if (msg.role !== 'assistant') continue;
+                        const contentList = Array.isArray(msg.content_list) ? msg.content_list : [];
+                        const answer = contentList
+                            .filter(item => item && item.phase === 'answer' && typeof item.content === 'string')
+                            .map(item => item.content)
+                            .join('')
+                            .trim();
+                        if (answer) return answer;
+                        if (typeof msg.content === 'string' && msg.content.trim()) return msg.content.trim();
+                    }
+                } catch (e) {}
+                return '';
+            }
+
+            function extractQwenFromStream(text) {
+                try {
+                    let answer = '';
+                    for (const block of sseBlocks(text)) {
+                        const raw = ssePayload(block);
+                        if (!raw || raw === '[DONE]') continue;
+                        try {
+                            const obj = JSON.parse(raw);
+                            const choices = Array.isArray(obj && obj.choices) ? obj.choices : [];
+                            const delta = choices[0] && choices[0].delta ? choices[0].delta : null;
+                            if (delta && delta.phase === 'answer' && typeof delta.content === 'string') {
+                                answer += delta.content;
+                            }
+                        } catch (e) {}
+                    }
+                    return answer.trim();
+                } catch (e) {}
+                return '';
+            }
+
+            function extractDeepSeekFromStream(text) {
+                try {
+                    let answer = '';
+                    let currentType = '';
+                    for (const block of sseBlocks(text)) {
+                        const raw = ssePayload(block);
+                        if (!raw || raw === '[DONE]') continue;
+                        let obj = null;
+                        try { obj = JSON.parse(raw); } catch (e) { continue; }
+
+                        const topFragments = obj && obj.v && obj.v.response && Array.isArray(obj.v.response.fragments)
+                            ? obj.v.response.fragments
+                            : null;
+                        if (topFragments) {
+                            for (const frag of topFragments) {
+                                if (frag && frag.type === 'RESPONSE') {
+                                    answer += frag.content || '';
+                                    currentType = 'RESPONSE';
+                                } else if (frag && frag.type) {
+                                    currentType = frag.type;
+                                }
+                            }
+                            continue;
+                        }
+
+                        if (obj && obj.p === 'response/fragments' && Array.isArray(obj.v)) {
+                            for (const frag of obj.v) {
+                                if (frag && frag.type === 'RESPONSE') {
+                                    answer += frag.content || '';
+                                    currentType = 'RESPONSE';
+                                } else if (frag && frag.type) {
+                                    currentType = frag.type;
+                                }
+                            }
+                            continue;
+                        }
+
+                        if (obj && obj.p === 'response/fragments/-1/content' && currentType === 'RESPONSE' && typeof obj.v === 'string') {
+                            answer += obj.v;
+                            continue;
+                        }
+
+                        if (obj && !obj.p && currentType === 'RESPONSE' && typeof obj.v === 'string') {
+                            answer += obj.v;
+                        }
+                    }
+                    return answer.trim();
+                } catch (e) {}
+                return '';
+            }
+
+            function extractZaiFromStream(text) {
+                try {
+                    let answer = '';
+                    for (const block of sseBlocks(text)) {
+                        const raw = ssePayload(block);
+                        if (!raw || raw === '[DONE]') continue;
+                        let obj = null;
+                        try { obj = JSON.parse(raw); } catch (e) { continue; }
+                        const data = obj && obj.data ? obj.data : null;
+                        if (data && data.phase === 'answer' && typeof data.delta_content === 'string') {
+                            answer += data.delta_content;
+                        }
+                    }
+                    return answer.trim();
+                } catch (e) {}
+                return '';
+            }
+
+            function processPayload(url, text) {
+                const normalizedUrl = String(url || '');
+                if (provider === 'qwen' && normalizedUrl.includes('/api/v2/chat/completions')) {
+                    const answer = extractQwenFromStream(text);
+                    if (answer) store('qwen', normalizedUrl, answer);
+                }
+                if (provider === 'qwen' && normalizedUrl.includes('/api/v2/chats/')) {
+                    const answer = extractQwenFromChatDetail(text);
+                    if (answer) store('qwen', normalizedUrl, answer);
+                }
+                if (provider === 'deepseek' && normalizedUrl.includes('/api/v0/chat/completion')) {
+                    const answer = extractDeepSeekFromStream(text);
+                    if (answer) store('deepseek', normalizedUrl, answer);
+                }
+                if (provider === 'zai' && normalizedUrl.includes('/api/v2/chat/completions')) {
+                    const answer = extractZaiFromStream(text);
+                    if (answer) store('zai', normalizedUrl, answer);
+                }
+            }
+
+            if (storeRoot.__hooked) return true;
+            storeRoot.__hooked = true;
+
+            const shouldCapture = url => {
+                const normalizedUrl = String(url || '');
+                return normalizedUrl.includes('/api/v2/chat/completions')
+                    || normalizedUrl.includes('/api/v2/chats/')
+                    || normalizedUrl.includes('/api/v0/chat/completion');
+            };
+
+            const originalFetch = window.fetch.bind(window);
+            window.fetch = async function(...args) {
+                const res = await originalFetch(...args);
+                try {
+                    const target = args[0];
+                    const url = String(target && target.url ? target.url : target || '');
+                    if (shouldCapture(url)) {
+                        const clone = res.clone();
+                        const text = await clone.text();
+                        processPayload(url, text);
+                    }
+                } catch (e) {}
+                return res;
+            };
+
+            const originalOpen = XMLHttpRequest.prototype.open;
+            const originalSend = XMLHttpRequest.prototype.send;
+            XMLHttpRequest.prototype.open = function(method, url, ...rest) {
+                this.__proximaUrl = url;
+                return originalOpen.call(this, method, url, ...rest);
+            };
+            XMLHttpRequest.prototype.send = function(...args) {
+                this.addEventListener('load', function() {
+                    try {
+                        const url = String(this.__proximaUrl || '');
+                        if (shouldCapture(url)) {
+                            processPayload(url, String(this.responseText || ''));
+                        }
+                    } catch (e) {}
+                });
+                return originalSend.apply(this, args);
+            };
+
+            return true;
+        })()
+    `);
+}
+
+async function waitForProviderNetworkResponse(webContents, provider, timeoutMs = 15000) {
+    if (!['qwen', 'deepseek', 'zai'].includes(provider)) return '';
+
+    const started = Date.now();
+    while (Date.now() - started < timeoutMs) {
+        const captured = await webContents.executeJavaScript(`
+            (function() {
+                const state = window.__proximaResponseCapture && window.__proximaResponseCapture[${JSON.stringify(provider)}];
+                if (!state) return { response: '', done: false, source: '' };
+                return {
+                    response: typeof state.response === 'string' ? state.response : '',
+                    done: !!state.done,
+                    source: state.source || ''
+                };
+            })()
+        `).catch(() => ({ response: '', done: false, source: '' }));
+
+        if (captured && captured.response && captured.response.trim()) {
+            console.log(`[${provider}] Network capture succeeded from ${captured.source || 'unknown source'} (${captured.response.length} chars)`);
+            return captured.response.trim();
+        }
+
+        await sleep(500);
+    }
+
+    return '';
+}
+
 async function sendToGemini(webContents, message) {
     console.log('[Gemini] Sending message...');
 
@@ -1117,63 +1391,87 @@ async function sendToGemini(webContents, message) {
 
     await sleep(300);
 
-    // Step 2: Type the message using keyboard simulation (Trusted Types compatible)
+    // Step 2: Type the message using DOM-safe input, then click Gemini's send button
     const typeResult = await webContents.executeJavaScript(`
         (function() {
             const text = ${JSON.stringify(message)};
-            const active = document.activeElement;
-            
-            if (active) {
-                if (active.contentEditable === 'true' || active.isContentEditable) {
-                    // DON'T clear - just append to preserve file attachments
-                    // Create paragraph with textContent (Trusted Types safe)
-                    const p = document.createElement('p');
-                    p.textContent = text;
-                    active.appendChild(p);
-                    
-                    // Trigger input events
-                    active.dispatchEvent(new Event('input', { bubbles: true }));
-                    active.dispatchEvent(new Event('change', { bubbles: true }));
-                    return { success: true, method: 'contenteditable' };
-                } else if (active.tagName === 'TEXTAREA' || active.tagName === 'INPUT') {
-                    active.value = text;
-                    active.dispatchEvent(new Event('input', { bubbles: true }));
-                    return { success: true, method: 'input' };
-                }
-            }
-            
-            // Fallback: Try ql-editor directly
-            const qlEditor = document.querySelector('.ql-editor, rich-textarea .ql-editor');
-            if (qlEditor) {
-                // DON'T clear - just append
+
+            function appendToEditable(el, value) {
+                el.focus();
                 const p = document.createElement('p');
-                p.textContent = text;
-                qlEditor.appendChild(p);
-                qlEditor.dispatchEvent(new Event('input', { bubbles: true }));
-                return { success: true, method: 'ql-editor-fallback' };
+                p.textContent = value;
+                el.appendChild(p);
+                el.dispatchEvent(new InputEvent('input', {
+                    bubbles: true,
+                    cancelable: true,
+                    data: value,
+                    inputType: 'insertText'
+                }));
+                el.dispatchEvent(new Event('change', { bubbles: true }));
+                return { success: true, method: 'contenteditable', value: (el.innerText || '').trim() };
             }
-            
+
+            function setNativeValue(el, value) {
+                const proto = el.tagName === 'TEXTAREA'
+                    ? window.HTMLTextAreaElement.prototype
+                    : window.HTMLInputElement.prototype;
+                const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+                if (desc && typeof desc.set === 'function') desc.set.call(el, value);
+                else el.value = value;
+                el.dispatchEvent(new InputEvent('input', {
+                    bubbles: true,
+                    cancelable: true,
+                    data: value,
+                    inputType: 'insertText'
+                }));
+                el.dispatchEvent(new Event('change', { bubbles: true }));
+                return { success: true, method: 'native-input', value: el.value || '' };
+            }
+
+            const editable = document.querySelector('rich-textarea .ql-editor, .ql-editor, [contenteditable="true"][aria-label*="Gemini"], [contenteditable="true"]');
+            if (editable) return appendToEditable(editable, text);
+
+            const input = document.querySelector('textarea[aria-label*="Gemini"], textarea, input[type="text"]');
+            if (input) return setNativeValue(input, text);
+
             return { success: false };
         })()
     `);
 
     console.log('[Gemini] Type result:', typeResult);
-    await sleep(300);
+    await sleep(400);
 
-    // Re-focus input area to ensure Enter works
-    await webContents.executeJavaScript(`
+    const sendResult = await webContents.executeJavaScript(`
         (function() {
-            const input = document.querySelector('rich-textarea .ql-editor, .ql-editor, [contenteditable="true"]');
+            const visible = el => el && (el.offsetParent !== null || el.getClientRects().length > 0);
+            const btn = Array.from(document.querySelectorAll('button,[role="button"]')).find(el => {
+                const aria = (el.getAttribute('aria-label') || '').toLowerCase();
+                const text = (el.innerText || el.textContent || '').toLowerCase();
+                const cls = (el.className || '').toString().toLowerCase();
+                return visible(el) && !el.disabled && (
+                    aria.includes('kirim pesan') || aria.includes('send message') ||
+                    text.includes('kirim') || cls.includes('send-button')
+                );
+            });
+            if (btn) {
+                btn.click();
+                return { sent: true, method: 'button-click' };
+            }
+            const input = document.querySelector('rich-textarea .ql-editor, .ql-editor, [contenteditable="true"], textarea');
             if (input) {
                 input.focus();
+                input.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Enter', code: 'Enter' }));
+                input.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'Enter', code: 'Enter' }));
+                return { sent: true, method: 'enter-dispatch' };
             }
+            return { sent: false };
         })()
-    `);
-    await sleep(100);
+    `).catch(() => ({ sent: false }));
 
-    // Send with Enter key only
-    await webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Enter' });
-    await webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Enter' });
+    if (!sendResult.sent) {
+        await webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Enter' });
+        await webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Enter' });
+    }
 
     return { sent: true };
 }
@@ -1221,53 +1519,370 @@ async function sendToModernProvider(webContents, provider, message) {
 
     await sleep(500);
 
+    if (provider === 'qwen' || provider === 'deepseek' || provider === 'zai') {
+        await installProviderNetworkResponseCapture(webContents, provider);
+    }
+
     if (provider === 'qwen') {
-        const qwenReady = await webContents.executeJavaScript(`
+        const runQwenSendAttempt = async () => webContents.executeJavaScript(`
+            (async function() {
+                const text = ${JSON.stringify(message)};
+                const visible = el => !!(el && (el.offsetParent !== null || el.getClientRects().length > 0));
+                const input = document.querySelector('textarea.message-input-textarea, textarea[placeholder*="help"], textarea');
+                if (!visible(input)) return { sent: false, error: 'No Qwen input field found' };
+
+                input.focus();
+                const proto = window.HTMLTextAreaElement.prototype;
+                const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+                if (desc && typeof desc.set === 'function') desc.set.call(input, text);
+                else input.value = text;
+                input.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, data: text, inputType: 'insertText' }));
+                input.dispatchEvent(new Event('change', { bubbles: true }));
+
+                await new Promise(resolve => setTimeout(resolve, 800));
+
+                const btn = document.querySelector('button.send-button');
+                let method = 'none';
+                if (visible(btn) && !btn.disabled) {
+                    btn.focus();
+                    btn.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+                    btn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+                    btn.click();
+                    btn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+                    btn.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
+                    method = 'button-pointer-click';
+                } else {
+                    input.focus();
+                    input.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Enter', code: 'Enter' }));
+                    input.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'Enter', code: 'Enter' }));
+                    method = 'keyboard-dispatch';
+                }
+
+                await new Promise(resolve => setTimeout(resolve, 4000));
+                const body = document.body?.innerText || '';
+                return {
+                    sent: true,
+                    method,
+                    href: location.href,
+                    value: input.value || '',
+                    includes: body.includes(${JSON.stringify(message.substring(0, Math.min(16, message.length)))}),
+                    thinkingCompleted: /thinking completed/i.test(body),
+                    body: body.slice(0, 1200)
+                };
+            })()
+        `).catch(e => ({ sent: false, error: e.message }));
+
+        let qwenSendAttempt = await runQwenSendAttempt();
+        if (!qwenSendAttempt.sent) {
+            return qwenSendAttempt;
+        }
+
+        let qwenNetworkResponse = await waitForProviderNetworkResponse(webContents, 'qwen', 18000);
+        if (qwenNetworkResponse) {
+            return { sent: true, response: qwenNetworkResponse };
+        }
+
+        let likelySent = (qwenSendAttempt.href && qwenSendAttempt.href.includes('/c/')) || qwenSendAttempt.includes || qwenSendAttempt.thinkingCompleted;
+        if (!likelySent) {
+            console.log('[qwen] First submit attempt showed no page change, retrying once...');
+            qwenSendAttempt = await runQwenSendAttempt();
+            if (!qwenSendAttempt.sent) {
+                return qwenSendAttempt;
+            }
+            qwenNetworkResponse = await waitForProviderNetworkResponse(webContents, 'qwen', 18000);
+            if (qwenNetworkResponse) {
+                return { sent: true, response: qwenNetworkResponse };
+            }
+            likelySent = (qwenSendAttempt.href && qwenSendAttempt.href.includes('/c/')) || qwenSendAttempt.includes || qwenSendAttempt.thinkingCompleted;
+        }
+
+        if (!likelySent) {
+            return { sent: false, error: 'Qwen native input succeeded but submit did not change page state' };
+        }
+
+        return { sent: true };
+    }
+
+    if (provider === 'deepseek') {
+        const deepseekResult = await webContents.executeJavaScript(`
+            (async function() {
+                const text = ${JSON.stringify(message)};
+                const input = document.querySelector('textarea[placeholder*="DeepSeek"], textarea');
+                if (!input || input.offsetParent === null) return { sent: false, error: 'No DeepSeek input field found' };
+
+                input.focus();
+                input.click();
+                const proto = window.HTMLTextAreaElement.prototype;
+                const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+                if (desc && typeof desc.set === 'function') desc.set.call(input, text);
+                else input.value = text;
+                input.dispatchEvent(new InputEvent('input', {
+                    bubbles: true,
+                    cancelable: true,
+                    data: text,
+                    inputType: 'insertText'
+                }));
+                input.dispatchEvent(new Event('change', { bubbles: true }));
+                input.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: ' ', code: 'Space' }));
+                input.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: ' ', code: 'Space' }));
+
+                await new Promise(resolve => setTimeout(resolve, 500));
+
+                const value = input.value || '';
+                if (!value || !value.includes(text.substring(0, Math.min(16, text.length)))) {
+                    return { sent: false, error: 'Message not present after native input', value };
+                }
+
+                const buttons = Array.from(document.querySelectorAll('[role="button"]')).filter(el => {
+                    const cls = (el.className || '').toString();
+                    const ariaDisabled = el.getAttribute('aria-disabled');
+                    return (el.offsetParent !== null || el.getClientRects().length > 0) &&
+                           cls.includes('ds-icon-button') &&
+                           !cls.includes('ds-toggle-button');
+                });
+
+                const sendBtn = buttons.find(el => (el.className || '').toString().includes('_52c986b') && el.getAttribute('aria-disabled') !== 'true')
+                    || buttons.filter(el => el.getAttribute('aria-disabled') !== 'true').pop();
+
+                if (sendBtn) {
+                    sendBtn.click();
+                    return { sent: true, method: 'deepseek-send-button', inputValue: input.value || '' };
+                }
+
+                input.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Enter', code: 'Enter' }));
+                input.dispatchEvent(new KeyboardEvent('keypress', { bubbles: true, key: 'Enter', code: 'Enter' }));
+                input.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'Enter', code: 'Enter' }));
+                return { sent: true, method: 'deepseek-enter-fallback', inputValue: input.value || '' };
+            })()
+        `).catch(e => ({ sent: false, error: e.message }));
+
+        if (!deepseekResult.sent) {
+            return deepseekResult;
+        }
+
+        const deepseekNetworkResponse = await waitForProviderNetworkResponse(webContents, 'deepseek', 18000);
+        if (deepseekNetworkResponse) {
+            return { sent: true, response: deepseekNetworkResponse };
+        }
+
+        return { sent: true };
+    }
+
+    if (provider === 'minimax') {
+        const marker = message.substring(0, Math.min(24, message.length));
+        const minimaxReady = await webContents.executeJavaScript(`
             (function() {
-                const input = document.querySelector('textarea.message-input-textarea, textarea');
+                const editor = document.querySelector('.tiptap-editor, .ProseMirror, [contenteditable="true"]');
+                if (!editor || editor.offsetParent === null) return { found: false };
+                editor.focus();
+                editor.click();
+                return { found: true, text: (editor.innerText || '').trim(), href: location.href };
+            })()
+        `).catch(() => ({ found: false }));
+
+        if (!minimaxReady.found) {
+            return { sent: false, error: 'No MiniMax editor found' };
+        }
+
+        await webContents.sendInputEvent({ type: 'keyDown', keyCode: 'A', modifiers: ['control'] });
+        await webContents.sendInputEvent({ type: 'keyUp', keyCode: 'A', modifiers: ['control'] });
+        await webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Backspace' });
+        await webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Backspace' });
+        await sleep(150);
+
+        if (typeof webContents.insertText === 'function') {
+            await webContents.insertText(message);
+        } else {
+            await typeIntoPage(webContents, message);
+        }
+
+        await sleep(500);
+
+        const minimaxTyped = await webContents.executeJavaScript(`
+            (function() {
+                const editor = document.querySelector('.tiptap-editor, .ProseMirror, [contenteditable="true"]');
+                const body = document.body?.innerText || '';
+                return {
+                    value: editor ? ((editor.innerText || editor.textContent || '').trim()) : '',
+                    href: location.href,
+                    bodyCount: body.split(${JSON.stringify(marker)}).length - 1,
+                    body: body.slice(0, 1000)
+                };
+            })()
+        `).catch(() => ({ value: '' }));
+
+        if (!minimaxTyped.value || !minimaxTyped.value.includes(marker)) {
+            return { sent: false, error: 'MiniMax trusted typing did not populate the editor' };
+        }
+
+        const minimaxSubmit = await webContents.executeJavaScript(`
+            (async function() {
+                const marker = ${JSON.stringify(marker)};
+                const editor = document.querySelector('.tiptap-editor, .ProseMirror, [contenteditable="true"]');
+                const root = editor?.closest('.relative.text-pretty') || document;
+                if (!editor) return { sent: false, error: 'No MiniMax editor found during submit' };
+
+                const beforeHref = location.href;
+                const beforeBody = document.body?.innerText || '';
+                const countMarker = (text) => (text && marker ? text.split(marker).length - 1 : 0);
+                const visible = (el) => !!el && (el.offsetParent !== null || el.getClientRects().length > 0);
+                const candidates = Array.from(root.querySelectorAll('button, [role="button"], div')).filter(el => {
+                    if (!visible(el)) return false;
+                    const cls = (el.className || '').toString();
+                    if (!/bg-bg_interaction_primary_(default|inactive)|text-text_label_primary_default/.test(cls)) return false;
+                    const rect = el.getBoundingClientRect();
+                    return rect.width >= 24 && rect.height >= 24;
+                });
+
+                const pick = candidates.sort((a, b) => {
+                    const ar = a.getBoundingClientRect();
+                    const br = b.getBoundingClientRect();
+                    return (br.x + br.y) - (ar.x + ar.y);
+                })[0] || null;
+
+                const clickEl = (el) => {
+                    const events = ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'];
+                    for (const type of events) {
+                        el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
+                    }
+                    if (typeof el.click === 'function') el.click();
+                };
+
+                let method = 'button-click';
+                if (pick) {
+                    clickEl(pick);
+                } else {
+                    method = 'enter-fallback';
+                    editor.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Enter', code: 'Enter' }));
+                    editor.dispatchEvent(new KeyboardEvent('keypress', { bubbles: true, key: 'Enter', code: 'Enter' }));
+                    editor.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'Enter', code: 'Enter' }));
+                }
+
+                await new Promise(resolve => setTimeout(resolve, 2500));
+
+                const afterBody = document.body?.innerText || '';
+                const afterValue = (editor.innerText || editor.textContent || '').trim();
+                const afterHref = location.href;
+                const advanced = afterHref !== beforeHref || afterValue !== marker || countMarker(afterBody) > countMarker(beforeBody);
+
+                return {
+                    sent: advanced,
+                    method,
+                    beforeHref,
+                    afterHref,
+                    beforeCount: countMarker(beforeBody),
+                    afterCount: countMarker(afterBody),
+                    remainingEditorText: afterValue,
+                    candidateClass: pick ? (pick.className || '').toString() : ''
+                };
+            })()
+        `).catch(e => ({ sent: false, error: e.message }));
+
+        if (!minimaxSubmit.sent) {
+            return { sent: false, error: minimaxSubmit.error || 'MiniMax submit did not change page state', details: minimaxSubmit };
+        }
+
+        return { sent: true, method: minimaxSubmit.method };
+    }
+
+    if (provider === 'zai') {
+        const zaiReady = await webContents.executeJavaScript(`
+            (function() {
+                const input = document.querySelector('textarea[placeholder*="Send a Message"], textarea');
                 if (!input || input.offsetParent === null) return { found: false };
                 input.focus();
                 input.click();
-                input.value = '';
-                input.dispatchEvent(new Event('input', { bubbles: true }));
                 return { found: true };
             })()
         `).catch(() => ({ found: false }));
 
-        if (!qwenReady.found) {
-            return { sent: false, error: 'No Qwen input field found' };
+        if (!zaiReady.found) {
+            return { sent: false, error: 'No Z.ai input field found' };
         }
 
-        await sleep(250);
+        await webContents.sendInputEvent({ type: 'keyDown', keyCode: 'A', modifiers: ['control'] });
+        await webContents.sendInputEvent({ type: 'keyUp', keyCode: 'A', modifiers: ['control'] });
+        await webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Backspace' });
+        await webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Backspace' });
+        await sleep(150);
 
-        try {
-            if (typeof webContents.insertText === 'function') {
-                await webContents.insertText(message);
-            } else {
-                for (const ch of message) {
-                    await webContents.sendInputEvent({ type: 'char', keyCode: ch });
+        if (typeof webContents.insertText === 'function') {
+            await webContents.insertText(message);
+        } else {
+            for (const ch of message) {
+                await webContents.sendInputEvent({ type: 'char', keyCode: ch });
+                if (ch === '\n') {
+                    await sleep(20);
                 }
             }
-        } catch (e) {
-            return { sent: false, error: `Failed typing into Qwen: ${e.message}` };
         }
 
-        await sleep(400);
+        await sleep(500);
 
-        const qwenClicked = await webContents.executeJavaScript(`
+        const zaiTyped = await webContents.executeJavaScript(`
             (function() {
-                const btn = document.querySelector('button.send-button');
+                const input = document.querySelector('textarea[placeholder*="Send a Message"], textarea');
+                const btn = document.querySelector('button.sendMessageButton, #send-message-button, button[type="submit"]');
+                return {
+                    value: input ? (input.value || '') : '',
+                    href: location.href,
+                    buttonVisible: !!(btn && (btn.offsetParent !== null || btn.getClientRects().length > 0)),
+                    buttonDisabled: !!(btn && btn.disabled)
+                };
+            })()
+        `).catch(() => ({ value: '' }));
+
+        if (!zaiTyped.value || !zaiTyped.value.includes(message.substring(0, Math.min(16, message.length)))) {
+            return { sent: false, error: 'Z.ai trusted typing did not populate the composer' };
+        }
+
+        const zaiSubmit = await webContents.executeJavaScript(`
+            (function() {
+                const input = document.querySelector('textarea[placeholder*="Send a Message"], textarea');
+                const form = input ? input.closest('form') : null;
+                const btn = document.querySelector('button.sendMessageButton, #send-message-button, button[type="submit"]');
                 if (btn && !btn.disabled && (btn.offsetParent !== null || btn.getClientRects().length > 0)) {
                     btn.click();
-                    return { clicked: true };
                 }
-                return { clicked: false };
+                if (form) {
+                    form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+                    if (typeof form.requestSubmit === 'function') form.requestSubmit(btn || undefined);
+                }
+                return { submitted: true };
             })()
-        `).catch(() => ({ clicked: false }));
+        `).catch(e => ({ submitted: false, error: e.message }));
 
-        if (!qwenClicked.clicked) {
-            await webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Enter' });
-            await webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Enter' });
+        if (!zaiSubmit.submitted) {
+            return { sent: false, error: zaiSubmit.error || 'Failed to submit Z.ai form' };
+        }
+
+        const zaiNetworkResponse = await waitForProviderNetworkResponse(webContents, 'zai', 20000);
+        if (zaiNetworkResponse) {
+            return { sent: true, response: zaiNetworkResponse };
+        }
+
+        await sleep(2500);
+        const zaiSentState = await webContents.executeJavaScript(`
+            (function() {
+                const input = document.querySelector('textarea[placeholder*="Send a Message"], textarea');
+                const body = document.body?.innerText || '';
+                return {
+                    href: location.href,
+                    value: input ? (input.value || '') : '',
+                    includes: body.includes(${JSON.stringify(message.substring(0, Math.min(16, message.length)))}),
+                    noResponseError: /No response,? Please try again later\./i.test(body),
+                    body: body.slice(0, 1200)
+                };
+            })()
+        `).catch(() => ({ href: '', value: '' }));
+
+        const likelySent = (zaiSentState.href && zaiSentState.href.includes('/c/')) || zaiSentState.includes || zaiSentState.value === '';
+        if (!likelySent) {
+            return { sent: false, error: 'Z.ai submit did not change page state' };
+        }
+
+        if (zaiSentState.noResponseError) {
+            return { sent: false, error: 'Z.ai returned: No response, Please try again later.' };
         }
 
         return { sent: true };
@@ -1277,14 +1892,16 @@ async function sendToModernProvider(webContents, provider, message) {
     for (let attempt = 0; attempt < 8; attempt++) {
         inputFound = await webContents.executeJavaScript(`
             (function() {
-                const selectors = [
-                    'textarea',
-                    '[contenteditable="true"]',
-                    '.ql-editor',
-                    'rich-textarea .ql-editor',
-                    'rich-textarea [contenteditable="true"]',
-                    'input[type="text"]'
-                ];
+                const selectors = window.location.host.includes('deepseek')
+                    ? ['textarea[placeholder*="DeepSeek"]', 'textarea']
+                    : [
+                        'textarea',
+                        '[contenteditable="true"]',
+                        '.ql-editor',
+                        'rich-textarea .ql-editor',
+                        'rich-textarea [contenteditable="true"]',
+                        'input[type="text"]'
+                    ];
                 for (const selector of selectors) {
                     const input = document.querySelector(selector);
                     if (input && input.offsetParent !== null) {
@@ -1335,7 +1952,7 @@ async function sendToModernProvider(webContents, provider, message) {
                     el.dispatchEvent(new Event('change', { bubbles: true }));
                     el.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: ' ', code: 'Space' }));
                     el.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: ' ', code: 'Space' }));
-                    return { success: true, method: 'native-input' };
+                    return { success: true, method: 'native-input', value: el.value || '' };
                 }
 
                 if (el.contentEditable === 'true' || el.isContentEditable) {
@@ -1350,10 +1967,18 @@ async function sendToModernProvider(webContents, provider, message) {
                         inputType: 'insertText'
                     }));
                     el.dispatchEvent(new Event('change', { bubbles: true }));
-                    return { success: true, method: 'contenteditable' };
+                    return { success: true, method: 'contenteditable', value: el.innerText || '' };
                 }
 
                 return { success: false };
+            }
+
+            const preferred = window.location.host.includes('deepseek')
+                ? document.querySelector('textarea[placeholder*="DeepSeek"], textarea')
+                : null;
+            if (preferred) {
+                preferred.focus();
+                return fireTextEvents(preferred, text);
             }
 
             const active = document.activeElement;
@@ -1404,6 +2029,40 @@ async function sendToModernProvider(webContents, provider, message) {
                     zaiBtn.click();
                     return { clicked: true, method: 'zai-send-button' };
                 }
+                const genericZai = Array.from(document.querySelectorAll('button')).find(btn => visible(btn) && !btn.disabled && /bg-black rounded-full|send/i.test((btn.className || '').toString() + ' ' + (btn.ariaLabel || '')));
+                if (genericZai) {
+                    genericZai.click();
+                    return { clicked: true, method: 'zai-generic-button' };
+                }
+            }
+
+            if (window.location.host.includes('deepseek')) {
+                const ta = document.querySelector('textarea[placeholder*="DeepSeek"], textarea');
+                if (ta) {
+                    const composer = ta.closest('div');
+                    const deepseekBtn = Array.from((composer?.parentElement || document).querySelectorAll('[role="button"]')).filter(el => {
+                        const cls = (el.className || '').toString();
+                        const ariaDisabled = el.getAttribute('aria-disabled');
+                        return (el.offsetParent !== null || el.getClientRects().length > 0) &&
+                               cls.includes('ds-icon-button') &&
+                               !cls.includes('ds-toggle-button') &&
+                               ariaDisabled !== 'true';
+                    }).pop();
+                    if (deepseekBtn) {
+                        deepseekBtn.click();
+                        return { clicked: true, method: 'deepseek-send-button' };
+                    }
+                    ta.focus();
+                    ta.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Enter', code: 'Enter' }));
+                    ta.dispatchEvent(new KeyboardEvent('keypress', { bubbles: true, key: 'Enter', code: 'Enter' }));
+                    ta.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'Enter', code: 'Enter' }));
+                    const form = ta.closest('form');
+                    if (form) {
+                        form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+                        if (typeof form.requestSubmit === 'function') form.requestSubmit();
+                    }
+                    return { clicked: true, method: 'deepseek-enter-dispatch' };
+                }
             }
 
             const buttons = Array.from(document.querySelectorAll('button')).filter(btn => visible(btn) && !btn.disabled);
@@ -1423,6 +2082,10 @@ async function sendToModernProvider(webContents, provider, message) {
         await webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Enter' });
         await webContents.sendInputEvent({ type: 'char', keyCode: '\r' });
         await webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Enter' });
+        if (provider === 'deepseek') {
+            await webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Enter', modifiers: ['control'] });
+            await webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Enter', modifiers: ['control'] });
+        }
     }
 
     return { sent: true };
@@ -1549,18 +2212,50 @@ async function getResponseWithTypingStatus(provider) {
     // CHECK API CACHE FIRST — if API already captured the response, skip DOM scraping entirely
     if (_apiResponseCache[provider]) {
         const cached = _apiResponseCache[provider];
-        delete _apiResponseCache[provider]; // Clear after use
-        console.log(`[getResponseWithTyping] \u2714 Using API-cached response for ${provider} (${cached.length} chars) — DOM scraping SKIPPED`);
-        return {
-            typingStarted: true,
-            typingStopped: true,
-            response: cached
-        };
+        const looksLikeGeminiConversationId = provider === 'gemini' && /^c_[a-f0-9]+$/i.test((cached || '').trim());
+        if (looksLikeGeminiConversationId) {
+            console.log(`[getResponseWithTyping] Ignoring invalid Gemini API cache value: ${cached}`);
+            delete _apiResponseCache[provider];
+        } else {
+            delete _apiResponseCache[provider]; // Clear after use
+            console.log(`[getResponseWithTyping] \u2714 Using API-cached response for ${provider} (${cached.length} chars) — DOM scraping SKIPPED`);
+            return {
+                typingStarted: true,
+                typingStopped: true,
+                response: cached
+            };
+        }
     }
 
     const webContents = browserManager.getWebContents(provider);
     if (!webContents) {
         throw new Error(`Provider ${provider} not initialized`);
+    }
+
+    if (provider === 'qwen' || provider === 'deepseek' || provider === 'zai') {
+        const networkCaptured = await webContents.executeJavaScript(`
+            (function() {
+                const root = window.__proximaResponseCapture || {};
+                const state = root[${JSON.stringify(provider)}];
+                const response = state && typeof state.response === 'string' ? state.response.trim() : '';
+                if (!response) return '';
+                root[${JSON.stringify(provider)}] = {
+                    response: '',
+                    done: false,
+                    source: '',
+                    updatedAt: Date.now()
+                };
+                return response;
+            })()
+        `).catch(() => '');
+        if (networkCaptured) {
+            console.log(`[getResponseWithTyping] ✔ Using network-captured response for ${provider} (${networkCaptured.length} chars)`);
+            return {
+                typingStarted: true,
+                typingStopped: true,
+                response: networkCaptured
+            };
+        }
     }
 
     // Capture OLD fingerprint BEFORE getting response (for detecting new vs old responses)
@@ -1638,7 +2333,26 @@ async function getResponseWithTypingStatus(provider) {
             `).catch(() => '');
             responseState.gemini.fingerprint = oldFp;
             console.log(`[Gemini] Captured old response fingerprint: ${oldFp.substring(0, 50)}...`);
-        } else if (provider === 'kimi' || provider === 'minimax' || provider === 'mimo' || provider === 'qwen' || provider === 'zai' || provider === 'deepseek') {
+        } else if (provider === 'qwen') {
+            const oldFp = await webContents.executeJavaScript(`
+                (function() {
+                    // For Qwen: capture the LAST meaningful message BEFORE thinking started
+                    // Never capture "Thinking completed" as fingerprint
+                    const msgs = document.querySelectorAll('.qwen-chat-message');
+                    for (let i = msgs.length - 1; i >= 0; i--) {
+                        const text = (msgs[i].textContent || '').trim();
+                        if (text && text.length > 5 && !text.includes('Thinking completed')) {
+                            return text.substring(0, 200);
+                        }
+                    }
+                    // Fallback: capture anything that's not thinking
+                    const body = (document.body?.textContent || '').trim();
+                    return body.substring(0, 200);
+                })()
+            `).catch(() => '');
+            responseState.qwen.fingerprint = oldFp;
+            console.log(`[Qwen] Captured old response fingerprint: ${oldFp.substring(0, 50)}...`);
+        } else if (provider === 'kimi' || provider === 'minimax' || provider === 'mimo' || provider === 'zai' || provider === 'deepseek') {
             const oldFp = await webContents.executeJavaScript(`
                 (function() {
                     const selectors = [
@@ -1673,6 +2387,23 @@ async function getResponseWithTypingStatus(provider) {
     // Now get the actual response
     let response = await getProviderResponse(provider);
 
+    if (provider === 'minimax') {
+        const looksIncomplete = !response ||
+            response === 'No response captured' ||
+            /^Received\./i.test(response);
+
+        if (looksIncomplete) {
+            for (let attempt = 0; attempt < 3; attempt++) {
+                await sleep(8000);
+                const retry = await getSimpleProviderResponse(provider, '');
+                if (retry && retry !== 'No response captured' && !/^Received\./i.test(retry)) {
+                    response = retry;
+                    break;
+                }
+            }
+        }
+    }
+
     // Clean Perplexity-specific noise (query heading echo, trailing UI elements)
     if (provider === 'perplexity' && response) {
         response = cleanPerplexityResponse(response);
@@ -1683,6 +2414,206 @@ async function getResponseWithTypingStatus(provider) {
         typingStopped: true,
         response
     };
+}
+
+function useSimpleDomCapture(provider) {
+    return ['claude', 'gemini', 'kimi', 'minimax', 'mimo', 'qwen', 'zai', 'deepseek'].includes(provider);
+}
+
+function getSimpleCaptureSelectors(provider) {
+    if (provider === 'claude') {
+        return [
+            '[data-testid="chat-message-turn"]',
+            '[data-testid="assistant-turn"]',
+            '[data-testid="ai-message"]',
+            'div[data-turn-role="assistant"]',
+            'div[data-role="assistant"]',
+            'div[data-message-role="assistant"]',
+            '.font-claude-message',
+            '[class*="assistant"][class*="message"]',
+            '.prose',
+            '[class*="prose"]'
+        ];
+    }
+
+    if (provider === 'gemini') {
+        return [
+            'message-content',
+            '.message-content',
+            '.model-response-text',
+            '[class*="response-content"]',
+            'model-response',
+            '[class*="markdown"]'
+        ];
+    }
+
+    if (provider === 'qwen') {
+        return [
+            '.response-message-content',
+            '.phase-answer',
+            '.qwen-markdown',
+            '[class*="markdown"]',
+            '.markdown',
+            '[class*="response"]'
+        ];
+    }
+
+    if (provider === 'minimax') {
+        return [
+            '.message.received .matrix-markdown',
+            '.message.received .message-content',
+            '.matrix-markdown',
+            '.message.received'
+        ];
+    }
+
+    return [
+        '[data-message-author-role="assistant"]',
+        '[data-testid*="assistant"]',
+        '[data-testid*="answer"]',
+        '[class*="assistant"][class*="message"]',
+        '[class*="response"]',
+        'article',
+        '.markdown',
+        '[class*="markdown"]',
+        '.prose',
+        '[class*="prose"]'
+    ];
+}
+
+async function getSimpleProviderResponse(provider, oldFingerprint = '') {
+    const webContents = browserManager.getWebContents(provider);
+    const selectors = getSimpleCaptureSelectors(provider);
+    const selectorJson = JSON.stringify(selectors);
+    let lastText = '';
+    let stableCount = 0;
+    const stableThreshold = provider === 'claude' ? 4 : 3;
+
+    async function getMiMoBodyFallback() {
+        try {
+            const body = await webContents.executeJavaScript(`
+                (function() {
+                    return (document.body && (document.body.innerText || document.body.textContent) || '').trim();
+                })()
+            `);
+            const cleaned = (body || '')
+                .replace(/\r/g, '')
+                .replace(/Model demo platform\.[^\n]*/gi, '')
+                .replace(/Citation sources\s*\(\d+\)/gi, '')
+                .trim();
+            const thoughtMatch = cleaned.match(/Thought for[^\n]*\n+([\s\S]{1,1000})$/i);
+            if (thoughtMatch && thoughtMatch[1]) {
+                return thoughtMatch[1].trim();
+            }
+            return '';
+        } catch (e) {
+            return '';
+        }
+    }
+
+    for (let i = 0; i < 50; i++) {
+        const text = await webContents.executeJavaScript(`
+            (function() {
+                const selectors = ${selectorJson};
+                const isMiniMax = ${JSON.stringify(provider === 'minimax')};
+                const badText = [
+                    'thinking completed',
+                    'stopped this response',
+                    'model demo platform',
+                    'citation sources',
+                    'free trial',
+                    'history'
+                ];
+
+                function isVisible(el) {
+                    if (!el) return false;
+                    if (el.offsetParent !== null) return true;
+                    const style = window.getComputedStyle(el);
+                    return style && style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+                }
+
+                function normalize(text) {
+                    let out = (text || '')
+                        .replace(/\u00a0/g, ' ')
+                        .replace(/Thinking completed\\s*/gi, '')
+                        .replace(/Thought for[^\\n]*/gi, '')
+                        .replace(/Stopped this response,?\\s*you can re-?edit[^\\n]*/gi, '')
+                        .replace(/Model demo platform\.[^\\n]*/gi, '')
+                        .replace(/Citation sources\\s*\\(\\d+\\)/gi, '')
+                        .replace(/\\n{3,}/g, '\\n\\n')
+                        .trim();
+                    if (isMiniMax) {
+                        out = out
+                            .replace(/^Received\.[\s\S]{0,200}request[\s\S]*$/i, '')
+                            .replace(/^Thinking Process\\s*\\n[^\\n]*\\n+/i, '')
+                            .trim();
+                    }
+                    return out;
+                }
+
+                const candidates = [];
+                for (const selector of selectors) {
+                    const nodes = document.querySelectorAll(selector);
+                    for (const node of nodes) {
+                        if (!isVisible(node)) continue;
+                        const text = normalize(node.innerText || node.textContent || '');
+                        if (!text || text.length < 2) continue;
+                        const lower = text.toLowerCase();
+                        if (badText.some(x => lower === x || lower.startsWith(x + '\\n'))) continue;
+                        if (isMiniMax && /^received\.[\s\S]{0,200}request[\s\S]*$/i.test(text)) continue;
+                        if (/^(thinking|thought for|loading|generating|analyzing|searching)\\b/i.test(text) && text.length < 120) continue;
+                        candidates.push(text);
+                    }
+                }
+
+                for (let i = candidates.length - 1; i >= 0; i--) {
+                    if (candidates[i] && candidates[i].length > 0) return candidates[i];
+                }
+
+                return '';
+            })()
+        `);
+
+        const cleaned = (text || '').trim();
+        if (cleaned) {
+            const currentFingerprint = cleaned.substring(0, 200).trim();
+            if (oldFingerprint) {
+                const sameAsOld = currentFingerprint === oldFingerprint ||
+                    oldFingerprint.startsWith(currentFingerprint.substring(0, Math.min(100, currentFingerprint.length))) ||
+                    currentFingerprint.startsWith(oldFingerprint.substring(0, Math.min(100, oldFingerprint.length)));
+                if (sameAsOld) {
+                    await sleep(500);
+                    continue;
+                }
+            }
+
+            if (cleaned === lastText) {
+                stableCount++;
+                if (stableCount >= stableThreshold) {
+                    if (responseState[provider]) {
+                        responseState[provider].fingerprint = '';
+                    }
+                    console.log(`[getSimpleProviderResponse] ${provider}: captured ${cleaned.length} chars`);
+                    return cleaned;
+                }
+            } else {
+                lastText = cleaned;
+                stableCount = 0;
+            }
+        }
+
+        await sleep(500);
+    }
+
+    if ((!lastText || lastText === 'No response captured') && provider === 'mimo') {
+        const mimoFallback = await getMiMoBodyFallback();
+        if (mimoFallback) {
+            console.log(`[getSimpleProviderResponse] mimo: body fallback captured ${mimoFallback.length} chars`);
+            return mimoFallback;
+        }
+    }
+
+    return lastText || 'No response captured';
 }
 
 async function getProviderResponse(provider, customSelector = null) {
@@ -1782,6 +2713,10 @@ async function getProviderResponse(provider, customSelector = null) {
 
         // Small delay for DOM to settle (Perplexity needs more time for math/LaTeX rendering)
         await sleep((provider === 'claude' || provider === 'perplexity') ? 1500 : 500);
+
+    if (useSimpleDomCapture(provider)) {
+        return await getSimpleProviderResponse(provider, oldFingerprint);
+    }
 
     // STEP 4: DOM polling for response text
     let lastText = '';
@@ -2334,6 +3269,43 @@ async function getProviderResponse(provider, customSelector = null) {
                     }
                 }
 
+                // Qwen specific - capture the markdown content div directly
+                if (host.includes('qwen')) {
+                    // Qwen renders response inside .qwen-markdown div
+                    // The div is empty until content is streamed in
+                    // Use response-message-content textContent as primary source
+                    const respContent = document.querySelector('.response-message-content');
+                    if (respContent) {
+                        const rawText = (respContent.textContent || '').trim();
+                        // Skip "Thinking completed" placeholder and very short content
+                        if (rawText.length > 25 && !rawText.includes('Thinking completed')) {
+                            return rawText;
+                        }
+                    }
+                    // Fallback: check the phase-answer div's direct text (no recursion)
+                    const phaseDiv = document.querySelector('.phase-answer');
+                    if (phaseDiv) {
+                        const childTexts = [];
+                        for (let i = 0; i < phaseDiv.children.length; i++) {
+                            const childText = phaseDiv.children[i].textContent || '';
+                            if (childText.trim().length > 25 && !childText.includes('Thinking completed')) {
+                                childTexts.push(childText.trim());
+                            }
+                        }
+                        if (childTexts.length > 0) {
+                            return childTexts.join('\n').substring(0, 2000);
+                        }
+                    }
+                    // Fallback: try qwen-markdown (last resort)
+                    const qwenMarkdown = document.querySelector('.qwen-markdown');
+                    if (qwenMarkdown) {
+                        const markdown = cleanMarkdown(domToMarkdown(qwenMarkdown));
+                        if (markdown && markdown.length > 25 && !markdown.includes('Thinking completed')) {
+                            return markdown;
+                        }
+                    }
+                }
+
                 // Kimi / MiniMax / MiMo - generic modern chat extraction
                 if (host.includes('kimi') || host.includes('minimax') || host.includes('xiaomimimo') || host.includes('qwen') || host.includes('z.ai') || host.includes('deepseek')) {
                     const selectors = [
@@ -2413,8 +3385,42 @@ async function getProviderResponse(provider, customSelector = null) {
                     }
                 }
 
+                // Qwen-specific response detection
+                // IMPORTANT: Keep polling until real content appears
+                // The problem: initial capture returns "Thinking completed"
+                // We must NOT break on thinking-complete; continue waiting
+                if (provider === 'qwen') {
+                    const qwenStatus = await webContents.executeJavaScript(`
+                        (function() {
+                            const rc = document.querySelector('.response-message-content');
+                            if (!rc) return { hasAnswer: false, text: '' };
+                            const text = (rc.textContent || '').trim();
+                            // Real answer: content is > 25 chars and NOT just "Thinking completed"
+                            return { hasAnswer: text.length > 25 && !text.includes('Thinking completed'), text: text };
+                        })()
+                    `).catch(() => ({ hasAnswer: false, text: '' }));
+
+                    if (qwenStatus.hasAnswer) {
+                        // Answer is ready - directly capture from response-message-content
+                        const answerText = await webContents.executeJavaScript(`
+                            (function() {
+                                const rc = document.querySelector('.response-message-content');
+                                if (!rc) return '';
+                                const allText = (rc.textContent || '').trim();
+                                return allText.replace(/Thinking completed\s*/gi, '').trim();
+                            })()
+                        `).catch(() => '');
+                        return answerText || 'No response captured';
+                    } else {
+                        // Still thinking or no content yet - keep polling
+                        // Do NOT break, continue the loop
+                        await sleep(1000);
+                        continue;
+                    }
+                }
+
                 // For non-Perplexity providers: make sure this is a NEW response
-                if (provider !== 'perplexity' && oldFingerprint && !foundNewResponse) {
+                if (provider !== 'perplexity' && provider !== 'qwen' && oldFingerprint && !foundNewResponse) {
                     const currentFingerprint = text.substring(0, 200).trim();
                     if (currentFingerprint === oldFingerprint ||
                         oldFingerprint.startsWith(currentFingerprint.substring(0, 100)) ||
@@ -2858,6 +3864,35 @@ ipcMain.handle('get-mcp-config', () => {
 ipcMain.handle('copy-to-clipboard', (event, text) => {
     clipboard.writeText(text);
     return { success: true };
+});
+
+ipcMain.handle('read-clipboard', () => {
+    return clipboard.readText();
+});
+
+// Read clipboard from a specific provider's BrowserView renderer
+// This works because the BrowserView renderer IS the focused document for its webContents
+ipcMain.handle('read-provider-clipboard', async (event, provider) => {
+    try {
+        const webContents = browserManager.getWebContents(provider);
+        if (!webContents || webContents.isDestroyed()) {
+            return { success: false, error: 'Provider view not available' };
+        }
+        // Execute clipboard read in the provider's renderer context
+        // This SHOULD work because this webContents is the focused document
+        const text = await webContents.executeJavaScript(`
+            (async () => {
+                try {
+                    return await navigator.clipboard.readText();
+                } catch (e) {
+                    return 'CLIPBOARD_ERR:' + e.message;
+                }
+            })()
+        `);
+        return { success: true, text };
+    } catch (e) {
+        return { success: false, error: e.message };
+    }
 });
 
 ipcMain.handle('open-external', (event, url) => {

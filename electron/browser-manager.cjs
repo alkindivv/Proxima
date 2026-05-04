@@ -659,16 +659,22 @@ class BrowserManager {
                 case 'deepseek':
                     return await webContents.executeJavaScript(`
                         (function() {
+                            const bodyText = (document.body?.innerText || '').toLowerCase();
                             const hasInput = !!document.querySelector('textarea') ||
                                              !!document.querySelector('[contenteditable="true"]') ||
                                              !!document.querySelector('.ql-editor');
-                            const authButtons = Array.from(document.querySelectorAll('button, a')).filter(el => {
+                            const authButtons = Array.from(document.querySelectorAll('button, a, div, span')).filter(el => {
                                 const text = (el.innerText || el.textContent || '').trim().toLowerCase();
-                                if (!text) return false;
-                                return text === 'sign in' || text === 'log in' || text === 'login' || text.includes('continue with google');
+                                if (!text || text.length > 120) return false;
+                                return text === 'sign in' || text === 'log in' || text === 'login' ||
+                                       text === 'log in to sync chat history' ||
+                                       text.includes('continue with google');
                             });
                             const onAuthPage = /login|signin|auth/.test(window.location.href.toLowerCase());
-                            return hasInput && authButtons.length === 0 && !onAuthPage;
+                            const bodyLooksLoggedOut = bodyText.includes('log in to sync chat history') ||
+                                                       bodyText.includes('continue with google') ||
+                                                       bodyText.includes('sign in');
+                            return hasInput && authButtons.length === 0 && !onAuthPage && !bodyLooksLoggedOut;
                         })()
                     `);
                 default:

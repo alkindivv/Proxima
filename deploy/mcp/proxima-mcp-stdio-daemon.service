@@ -1,0 +1,31 @@
+[Unit]
+Description=Proxima MCP STDIO Daemon — managed MCP session bridge for IDE clients
+After=network.target proxima-app.service
+Wants=proxima-app.service
+StartLimitBurst=10
+StartLimitIntervalSec=60
+
+[Service]
+Type=simple
+User=proxima
+Group=proxima
+WorkingDirectory=/Proxima/src
+Environment=NODE_PATH=/Proxima/node_modules
+Environment=PROXIMA_MCP_STDIO_HOST=127.0.0.1
+Environment=PROXIMA_MCP_STDIO_PORT=19224
+Environment=MAX_CONCURRENT=10
+Environment=IDLE_TIMEOUT=1800000
+Environment=MCP_SERVER_PATH=/Proxima/src/mcp-server-v3.js
+ExecStart=/usr/local/bin/node /Proxima/src/proxima-mcp-stdio-daemon.js
+StandardOutput=null
+StandardError=journal
+Restart=always
+RestartSec=3
+NoNewPrivileges=false
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/Proxima /tmp
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+[Install]
+WantedBy=multi-user.target

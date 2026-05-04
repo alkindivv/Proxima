@@ -36,6 +36,8 @@ contextBridge.exposeInMainWorld('agentHub', {
 
 
     copyToClipboard: (text) => ipcRenderer.invoke('copy-to-clipboard', text),
+    readClipboard: () => ipcRenderer.invoke('read-clipboard'),
+    readProviderClipboard: (provider) => ipcRenderer.invoke('read-provider-clipboard', provider),
     openExternal: (url) => ipcRenderer.invoke('open-external', url),
     installCli: () => ipcRenderer.invoke('install-cli'),
     uninstallCli: () => ipcRenderer.invoke('uninstall-cli'),
