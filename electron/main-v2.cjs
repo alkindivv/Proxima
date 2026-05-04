@@ -770,9 +770,15 @@ async function sendMessageToProvider(provider, message, forceDOM = false) {
             console.log(`[${provider}] Trying API-first approach...`);
             const apiResponse = await providerAPI.sendViaAPI(provider, webContents, message);
             if (apiResponse && apiResponse.length > 0) {
-                console.log(`[${provider}] \u2714 API response captured (${apiResponse.length} chars)`);
-                _apiResponseCache[provider] = apiResponse;
-                return { response: apiResponse };
+                const looksLikeGeminiConversationId = provider === 'gemini' && /^c_[a-f0-9]+$/i.test((apiResponse || '').trim());
+                if (looksLikeGeminiConversationId) {
+                    console.log(`[${provider}] API returned conversation id (${apiResponse}) — falling back to DOM send`);
+                    delete _apiResponseCache[provider];
+                } else {
+                    console.log(`[${provider}] \u2714 API response captured (${apiResponse.length} chars)`);
+                    _apiResponseCache[provider] = apiResponse;
+                    return { response: apiResponse };
+                }
             }
             console.log(`[${provider}] API returned empty \u2014 falling back to DOM`);
             delete _apiResponseCache[provider];
@@ -1117,63 +1123,87 @@ async function sendToGemini(webContents, message) {
 
     await sleep(300);
 
-    // Step 2: Type the message using keyboard simulation (Trusted Types compatible)
+    // Step 2: Type the message using DOM-safe input, then click Gemini's send button
     const typeResult = await webContents.executeJavaScript(`
         (function() {
             const text = ${JSON.stringify(message)};
-            const active = document.activeElement;
-            
-            if (active) {
-                if (active.contentEditable === 'true' || active.isContentEditable) {
-                    // DON'T clear - just append to preserve file attachments
-                    // Create paragraph with textContent (Trusted Types safe)
-                    const p = document.createElement('p');
-                    p.textContent = text;
-                    active.appendChild(p);
-                    
-                    // Trigger input events
-                    active.dispatchEvent(new Event('input', { bubbles: true }));
-                    active.dispatchEvent(new Event('change', { bubbles: true }));
-                    return { success: true, method: 'contenteditable' };
-                } else if (active.tagName === 'TEXTAREA' || active.tagName === 'INPUT') {
-                    active.value = text;
-                    active.dispatchEvent(new Event('input', { bubbles: true }));
-                    return { success: true, method: 'input' };
-                }
-            }
-            
-            // Fallback: Try ql-editor directly
-            const qlEditor = document.querySelector('.ql-editor, rich-textarea .ql-editor');
-            if (qlEditor) {
-                // DON'T clear - just append
+
+            function appendToEditable(el, value) {
+                el.focus();
                 const p = document.createElement('p');
-                p.textContent = text;
-                qlEditor.appendChild(p);
-                qlEditor.dispatchEvent(new Event('input', { bubbles: true }));
-                return { success: true, method: 'ql-editor-fallback' };
+                p.textContent = value;
+                el.appendChild(p);
+                el.dispatchEvent(new InputEvent('input', {
+                    bubbles: true,
+                    cancelable: true,
+                    data: value,
+                    inputType: 'insertText'
+                }));
+                el.dispatchEvent(new Event('change', { bubbles: true }));
+                return { success: true, method: 'contenteditable', value: (el.innerText || '').trim() };
             }
-            
+
+            function setNativeValue(el, value) {
+                const proto = el.tagName === 'TEXTAREA'
+                    ? window.HTMLTextAreaElement.prototype
+                    : window.HTMLInputElement.prototype;
+                const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+                if (desc && typeof desc.set === 'function') desc.set.call(el, value);
+                else el.value = value;
+                el.dispatchEvent(new InputEvent('input', {
+                    bubbles: true,
+                    cancelable: true,
+                    data: value,
+                    inputType: 'insertText'
+                }));
+                el.dispatchEvent(new Event('change', { bubbles: true }));
+                return { success: true, method: 'native-input', value: el.value || '' };
+            }
+
+            const editable = document.querySelector('rich-textarea .ql-editor, .ql-editor, [contenteditable="true"][aria-label*="Gemini"], [contenteditable="true"]');
+            if (editable) return appendToEditable(editable, text);
+
+            const input = document.querySelector('textarea[aria-label*="Gemini"], textarea, input[type="text"]');
+            if (input) return setNativeValue(input, text);
+
             return { success: false };
         })()
     `);
 
     console.log('[Gemini] Type result:', typeResult);
-    await sleep(300);
+    await sleep(400);
 
-    // Re-focus input area to ensure Enter works
-    await webContents.executeJavaScript(`
+    const sendResult = await webContents.executeJavaScript(`
         (function() {
-            const input = document.querySelector('rich-textarea .ql-editor, .ql-editor, [contenteditable="true"]');
+            const visible = el => el && (el.offsetParent !== null || el.getClientRects().length > 0);
+            const btn = Array.from(document.querySelectorAll('button,[role="button"]')).find(el => {
+                const aria = (el.getAttribute('aria-label') || '').toLowerCase();
+                const text = (el.innerText || el.textContent || '').toLowerCase();
+                const cls = (el.className || '').toString().toLowerCase();
+                return visible(el) && !el.disabled && (
+                    aria.includes('kirim pesan') || aria.includes('send message') ||
+                    text.includes('kirim') || cls.includes('send-button')
+                );
+            });
+            if (btn) {
+                btn.click();
+                return { sent: true, method: 'button-click' };
+            }
+            const input = document.querySelector('rich-textarea .ql-editor, .ql-editor, [contenteditable="true"], textarea');
             if (input) {
                 input.focus();
+                input.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Enter', code: 'Enter' }));
+                input.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'Enter', code: 'Enter' }));
+                return { sent: true, method: 'enter-dispatch' };
             }
+            return { sent: false };
         })()
-    `);
-    await sleep(100);
+    `).catch(() => ({ sent: false }));
 
-    // Send with Enter key only
-    await webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Enter' });
-    await webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Enter' });
+    if (!sendResult.sent) {
+        await webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Enter' });
+        await webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Enter' });
+    }
 
     return { sent: true };
 }
@@ -1224,12 +1254,19 @@ async function sendToModernProvider(webContents, provider, message) {
     if (provider === 'qwen') {
         const qwenReady = await webContents.executeJavaScript(`
             (function() {
-                const input = document.querySelector('textarea.message-input-textarea, textarea');
+                const input = document.querySelector('textarea.message-input-textarea, textarea[placeholder*="help"], textarea');
                 if (!input || input.offsetParent === null) return { found: false };
                 input.focus();
                 input.click();
-                input.value = '';
-                input.dispatchEvent(new Event('input', { bubbles: true }));
+                const proto = window.HTMLTextAreaElement.prototype;
+                const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+                if (desc && typeof desc.set === 'function') {
+                    desc.set.call(input, '');
+                } else {
+                    input.value = '';
+                }
+                input.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, data: '', inputType: 'deleteContentBackward' }));
+                input.dispatchEvent(new Event('change', { bubbles: true }));
                 return { found: true };
             })()
         `).catch(() => ({ found: false }));
@@ -1240,26 +1277,46 @@ async function sendToModernProvider(webContents, provider, message) {
 
         await sleep(250);
 
-        try {
-            if (typeof webContents.insertText === 'function') {
-                await webContents.insertText(message);
-            } else {
-                for (const ch of message) {
-                    await webContents.sendInputEvent({ type: 'char', keyCode: ch });
+        const qwenTyped = await webContents.executeJavaScript(`
+            (function() {
+                const text = ${JSON.stringify(message)};
+                const input = document.querySelector('textarea.message-input-textarea, textarea[placeholder*="help"], textarea');
+                if (!input) return { success: false, error: 'input missing' };
+                input.focus();
+                const proto = window.HTMLTextAreaElement.prototype;
+                const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+                if (desc && typeof desc.set === 'function') {
+                    desc.set.call(input, text);
+                } else {
+                    input.value = text;
                 }
-            }
-        } catch (e) {
-            return { sent: false, error: `Failed typing into Qwen: ${e.message}` };
+                input.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, data: text, inputType: 'insertText' }));
+                input.dispatchEvent(new Event('change', { bubbles: true }));
+                input.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: ' ', code: 'Space' }));
+                input.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: ' ', code: 'Space' }));
+                return { success: true, value: input.value, disabled: !!document.querySelector('button.send-button')?.disabled };
+            })()
+        `).catch(e => ({ success: false, error: e.message }));
+
+        if (!qwenTyped.success) {
+            return { sent: false, error: `Failed typing into Qwen: ${qwenTyped.error || 'unknown'}` };
         }
 
-        await sleep(400);
+        await sleep(500);
 
         const qwenClicked = await webContents.executeJavaScript(`
             (function() {
                 const btn = document.querySelector('button.send-button');
                 if (btn && !btn.disabled && (btn.offsetParent !== null || btn.getClientRects().length > 0)) {
                     btn.click();
-                    return { clicked: true };
+                    return { clicked: true, method: 'button' };
+                }
+                const input = document.querySelector('textarea.message-input-textarea, textarea');
+                if (input) {
+                    input.focus();
+                    input.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Enter', code: 'Enter' }));
+                    input.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'Enter', code: 'Enter' }));
+                    return { clicked: true, method: 'keyboard-dispatch' };
                 }
                 return { clicked: false };
             })()
@@ -1273,18 +1330,75 @@ async function sendToModernProvider(webContents, provider, message) {
         return { sent: true };
     }
 
+    if (provider === 'deepseek') {
+        const deepseekResult = await webContents.executeJavaScript(`
+            (async function() {
+                const text = ${JSON.stringify(message)};
+                const input = document.querySelector('textarea[placeholder*="DeepSeek"], textarea');
+                if (!input || input.offsetParent === null) return { sent: false, error: 'No DeepSeek input field found' };
+
+                input.focus();
+                input.click();
+                const proto = window.HTMLTextAreaElement.prototype;
+                const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+                if (desc && typeof desc.set === 'function') desc.set.call(input, text);
+                else input.value = text;
+                input.dispatchEvent(new InputEvent('input', {
+                    bubbles: true,
+                    cancelable: true,
+                    data: text,
+                    inputType: 'insertText'
+                }));
+                input.dispatchEvent(new Event('change', { bubbles: true }));
+                input.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: ' ', code: 'Space' }));
+                input.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: ' ', code: 'Space' }));
+
+                await new Promise(resolve => setTimeout(resolve, 500));
+
+                const buttons = Array.from(document.querySelectorAll('[role="button"]')).filter(el => {
+                    const cls = (el.className || '').toString();
+                    const ariaDisabled = el.getAttribute('aria-disabled');
+                    return (el.offsetParent !== null || el.getClientRects().length > 0) &&
+                           cls.includes('ds-icon-button') &&
+                           !cls.includes('ds-toggle-button');
+                });
+
+                const sendBtn = buttons.find(el => (el.className || '').toString().includes('_52c986b') && el.getAttribute('aria-disabled') !== 'true')
+                    || buttons.filter(el => el.getAttribute('aria-disabled') !== 'true').pop();
+
+                if (sendBtn) {
+                    sendBtn.click();
+                    return { sent: true, method: 'deepseek-send-button', inputValue: input.value || '' };
+                }
+
+                input.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Enter', code: 'Enter' }));
+                input.dispatchEvent(new KeyboardEvent('keypress', { bubbles: true, key: 'Enter', code: 'Enter' }));
+                input.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'Enter', code: 'Enter' }));
+                return { sent: true, method: 'deepseek-enter-fallback', inputValue: input.value || '' };
+            })()
+        `).catch(e => ({ sent: false, error: e.message }));
+
+        if (!deepseekResult.sent) {
+            return deepseekResult;
+        }
+
+        return { sent: true };
+    }
+
     let inputFound = { found: false };
     for (let attempt = 0; attempt < 8; attempt++) {
         inputFound = await webContents.executeJavaScript(`
             (function() {
-                const selectors = [
-                    'textarea',
-                    '[contenteditable="true"]',
-                    '.ql-editor',
-                    'rich-textarea .ql-editor',
-                    'rich-textarea [contenteditable="true"]',
-                    'input[type="text"]'
-                ];
+                const selectors = window.location.host.includes('deepseek')
+                    ? ['textarea[placeholder*="DeepSeek"]', 'textarea']
+                    : [
+                        'textarea',
+                        '[contenteditable="true"]',
+                        '.ql-editor',
+                        'rich-textarea .ql-editor',
+                        'rich-textarea [contenteditable="true"]',
+                        'input[type="text"]'
+                    ];
                 for (const selector of selectors) {
                     const input = document.querySelector(selector);
                     if (input && input.offsetParent !== null) {
@@ -1335,7 +1449,7 @@ async function sendToModernProvider(webContents, provider, message) {
                     el.dispatchEvent(new Event('change', { bubbles: true }));
                     el.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: ' ', code: 'Space' }));
                     el.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: ' ', code: 'Space' }));
-                    return { success: true, method: 'native-input' };
+                    return { success: true, method: 'native-input', value: el.value || '' };
                 }
 
                 if (el.contentEditable === 'true' || el.isContentEditable) {
@@ -1350,10 +1464,18 @@ async function sendToModernProvider(webContents, provider, message) {
                         inputType: 'insertText'
                     }));
                     el.dispatchEvent(new Event('change', { bubbles: true }));
-                    return { success: true, method: 'contenteditable' };
+                    return { success: true, method: 'contenteditable', value: el.innerText || '' };
                 }
 
                 return { success: false };
+            }
+
+            const preferred = window.location.host.includes('deepseek')
+                ? document.querySelector('textarea[placeholder*="DeepSeek"], textarea')
+                : null;
+            if (preferred) {
+                preferred.focus();
+                return fireTextEvents(preferred, text);
             }
 
             const active = document.activeElement;
@@ -1404,6 +1526,40 @@ async function sendToModernProvider(webContents, provider, message) {
                     zaiBtn.click();
                     return { clicked: true, method: 'zai-send-button' };
                 }
+                const genericZai = Array.from(document.querySelectorAll('button')).find(btn => visible(btn) && !btn.disabled && /bg-black rounded-full|send/i.test((btn.className || '').toString() + ' ' + (btn.ariaLabel || '')));
+                if (genericZai) {
+                    genericZai.click();
+                    return { clicked: true, method: 'zai-generic-button' };
+                }
+            }
+
+            if (window.location.host.includes('deepseek')) {
+                const ta = document.querySelector('textarea[placeholder*="DeepSeek"], textarea');
+                if (ta) {
+                    const composer = ta.closest('div');
+                    const deepseekBtn = Array.from((composer?.parentElement || document).querySelectorAll('[role="button"]')).filter(el => {
+                        const cls = (el.className || '').toString();
+                        const ariaDisabled = el.getAttribute('aria-disabled');
+                        return (el.offsetParent !== null || el.getClientRects().length > 0) &&
+                               cls.includes('ds-icon-button') &&
+                               !cls.includes('ds-toggle-button') &&
+                               ariaDisabled !== 'true';
+                    }).pop();
+                    if (deepseekBtn) {
+                        deepseekBtn.click();
+                        return { clicked: true, method: 'deepseek-send-button' };
+                    }
+                    ta.focus();
+                    ta.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Enter', code: 'Enter' }));
+                    ta.dispatchEvent(new KeyboardEvent('keypress', { bubbles: true, key: 'Enter', code: 'Enter' }));
+                    ta.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'Enter', code: 'Enter' }));
+                    const form = ta.closest('form');
+                    if (form) {
+                        form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+                        if (typeof form.requestSubmit === 'function') form.requestSubmit();
+                    }
+                    return { clicked: true, method: 'deepseek-enter-dispatch' };
+                }
             }
 
             const buttons = Array.from(document.querySelectorAll('button')).filter(btn => visible(btn) && !btn.disabled);
@@ -1423,6 +1579,10 @@ async function sendToModernProvider(webContents, provider, message) {
         await webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Enter' });
         await webContents.sendInputEvent({ type: 'char', keyCode: '\r' });
         await webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Enter' });
+        if (provider === 'deepseek') {
+            await webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Enter', modifiers: ['control'] });
+            await webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Enter', modifiers: ['control'] });
+        }
     }
 
     return { sent: true };
