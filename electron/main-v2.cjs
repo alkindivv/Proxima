@@ -530,6 +530,7 @@ async function handleMCPRequest(request) {
                 return { success: true, provider, loggedIn };
 
             case 'sendMessage':
+            case 'send-message':
                 // Check if file should be uploaded
                 if (data.filePath && fileReferenceEnabled) {
                     try {
@@ -635,6 +636,7 @@ async function handleMCPRequest(request) {
                 return { success: true, provider, ...typingStatus };
 
             case 'getResponseWithTyping':
+            case 'get-response-with-typing':
                 // Smart response capture - waits for typing to start and stop
                 const smartResponse = await getResponseWithTypingStatus(provider);
                 return {
@@ -646,11 +648,36 @@ async function handleMCPRequest(request) {
                 };
 
             case 'waitForSendButton':
+            case 'wait-for-send-button':
                 // Wait for send button to be visible and enabled
                 const buttonReady = await waitForSendButtonReady(provider);
                 return { success: true, provider, ready: buttonReady };
 
+            case 'readClipboard':
+            case 'read-clipboard':
+                return { success: true, text: clipboard.readText() };
+
+            case 'readProviderClipboard':
+            case 'read-provider-clipboard':
+            case 'get-provider-clipboard': {
+                const providerWebContents = browserManager.getWebContents(provider);
+                if (!providerWebContents || providerWebContents.isDestroyed()) {
+                    return { success: false, error: 'Provider view not available' };
+                }
+                const text = await providerWebContents.executeJavaScript(`
+                    (async () => {
+                        try {
+                            return await navigator.clipboard.readText();
+                        } catch (e) {
+                            return 'CLIPBOARD_ERR:' + e.message;
+                        }
+                    })()
+                `).catch(e => 'CLIPBOARD_ERR:' + e.message);
+                return { success: true, provider, text, systemClipboard: clipboard.readText() };
+            }
+
             case 'executeScript':
+            case 'execute-script':
                 const scriptResult = await browserManager.executeScript(provider, data.script);
                 return { success: true, provider, result: scriptResult };
 
@@ -1294,12 +1321,12 @@ async function sendToModernProvider(webContents, provider, message) {
                 input.dispatchEvent(new Event('change', { bubbles: true }));
                 input.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: ' ', code: 'Space' }));
                 input.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: ' ', code: 'Space' }));
-                return { success: true, value: input.value, disabled: !!document.querySelector('button.send-button')?.disabled };
+                return { success: true, value: input.value, disabled: !!document.querySelector('button.send-button')?.disabled, href: location.href };
             })()
         `).catch(e => ({ success: false, error: e.message }));
 
-        if (!qwenTyped.success) {
-            return { sent: false, error: `Failed typing into Qwen: ${qwenTyped.error || 'unknown'}` };
+        if (!qwenTyped.success || !qwenTyped.value || !qwenTyped.value.includes(message.substring(0, Math.min(16, message.length)))) {
+            return { sent: false, error: `Failed typing into Qwen: ${qwenTyped.error || 'message not present after native input'}` };
         }
 
         await sleep(500);
@@ -1325,6 +1352,26 @@ async function sendToModernProvider(webContents, provider, message) {
         if (!qwenClicked.clicked) {
             await webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Enter' });
             await webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Enter' });
+        }
+
+        await sleep(1000);
+        const qwenSentState = await webContents.executeJavaScript(`
+            (function() {
+                const input = document.querySelector('textarea.message-input-textarea, textarea[placeholder*="help"], textarea');
+                const body = document.body?.innerText || '';
+                return {
+                    href: location.href,
+                    value: input ? (input.value || '') : '',
+                    includes: body.includes(${JSON.stringify(message.substring(0, Math.min(16, message.length)))}),
+                    thinkingCompleted: /thinking completed/i.test(body),
+                    body: body.slice(0, 1200)
+                };
+            })()
+        `).catch(() => ({ href: '', value: '' }));
+
+        const likelySent = (qwenSentState.href && qwenSentState.href.includes('/c/')) || qwenSentState.includes || qwenSentState.thinkingCompleted;
+        if (!likelySent) {
+            return { sent: false, error: 'Qwen native input succeeded but submit did not change page state' };
         }
 
         return { sent: true };
@@ -1354,6 +1401,11 @@ async function sendToModernProvider(webContents, provider, message) {
                 input.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: ' ', code: 'Space' }));
 
                 await new Promise(resolve => setTimeout(resolve, 500));
+
+                const value = input.value || '';
+                if (!value || !value.includes(text.substring(0, Math.min(16, text.length)))) {
+                    return { sent: false, error: 'Message not present after native input', value };
+                }
 
                 const buttons = Array.from(document.querySelectorAll('[role="button"]')).filter(el => {
                     const cls = (el.className || '').toString();
