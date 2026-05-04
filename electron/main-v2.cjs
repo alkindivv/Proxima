@@ -1668,6 +1668,123 @@ async function sendToModernProvider(webContents, provider, message) {
         return { sent: true };
     }
 
+    if (provider === 'minimax') {
+        const marker = message.substring(0, Math.min(24, message.length));
+        const minimaxReady = await webContents.executeJavaScript(`
+            (function() {
+                const editor = document.querySelector('.tiptap-editor, .ProseMirror, [contenteditable="true"]');
+                if (!editor || editor.offsetParent === null) return { found: false };
+                editor.focus();
+                editor.click();
+                return { found: true, text: (editor.innerText || '').trim(), href: location.href };
+            })()
+        `).catch(() => ({ found: false }));
+
+        if (!minimaxReady.found) {
+            return { sent: false, error: 'No MiniMax editor found' };
+        }
+
+        await webContents.sendInputEvent({ type: 'keyDown', keyCode: 'A', modifiers: ['control'] });
+        await webContents.sendInputEvent({ type: 'keyUp', keyCode: 'A', modifiers: ['control'] });
+        await webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Backspace' });
+        await webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Backspace' });
+        await sleep(150);
+
+        if (typeof webContents.insertText === 'function') {
+            await webContents.insertText(message);
+        } else {
+            await typeIntoPage(webContents, message);
+        }
+
+        await sleep(500);
+
+        const minimaxTyped = await webContents.executeJavaScript(`
+            (function() {
+                const editor = document.querySelector('.tiptap-editor, .ProseMirror, [contenteditable="true"]');
+                const body = document.body?.innerText || '';
+                return {
+                    value: editor ? ((editor.innerText || editor.textContent || '').trim()) : '',
+                    href: location.href,
+                    bodyCount: body.split(${JSON.stringify(marker)}).length - 1,
+                    body: body.slice(0, 1000)
+                };
+            })()
+        `).catch(() => ({ value: '' }));
+
+        if (!minimaxTyped.value || !minimaxTyped.value.includes(marker)) {
+            return { sent: false, error: 'MiniMax trusted typing did not populate the editor' };
+        }
+
+        const minimaxSubmit = await webContents.executeJavaScript(`
+            (async function() {
+                const marker = ${JSON.stringify(marker)};
+                const editor = document.querySelector('.tiptap-editor, .ProseMirror, [contenteditable="true"]');
+                const root = editor?.closest('.relative.text-pretty') || document;
+                if (!editor) return { sent: false, error: 'No MiniMax editor found during submit' };
+
+                const beforeHref = location.href;
+                const beforeBody = document.body?.innerText || '';
+                const countMarker = (text) => (text && marker ? text.split(marker).length - 1 : 0);
+                const visible = (el) => !!el && (el.offsetParent !== null || el.getClientRects().length > 0);
+                const candidates = Array.from(root.querySelectorAll('button, [role="button"], div')).filter(el => {
+                    if (!visible(el)) return false;
+                    const cls = (el.className || '').toString();
+                    if (!/bg-bg_interaction_primary_(default|inactive)|text-text_label_primary_default/.test(cls)) return false;
+                    const rect = el.getBoundingClientRect();
+                    return rect.width >= 24 && rect.height >= 24;
+                });
+
+                const pick = candidates.sort((a, b) => {
+                    const ar = a.getBoundingClientRect();
+                    const br = b.getBoundingClientRect();
+                    return (br.x + br.y) - (ar.x + ar.y);
+                })[0] || null;
+
+                const clickEl = (el) => {
+                    const events = ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'];
+                    for (const type of events) {
+                        el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
+                    }
+                    if (typeof el.click === 'function') el.click();
+                };
+
+                let method = 'button-click';
+                if (pick) {
+                    clickEl(pick);
+                } else {
+                    method = 'enter-fallback';
+                    editor.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Enter', code: 'Enter' }));
+                    editor.dispatchEvent(new KeyboardEvent('keypress', { bubbles: true, key: 'Enter', code: 'Enter' }));
+                    editor.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'Enter', code: 'Enter' }));
+                }
+
+                await new Promise(resolve => setTimeout(resolve, 2500));
+
+                const afterBody = document.body?.innerText || '';
+                const afterValue = (editor.innerText || editor.textContent || '').trim();
+                const afterHref = location.href;
+                const advanced = afterHref !== beforeHref || afterValue !== marker || countMarker(afterBody) > countMarker(beforeBody);
+
+                return {
+                    sent: advanced,
+                    method,
+                    beforeHref,
+                    afterHref,
+                    beforeCount: countMarker(beforeBody),
+                    afterCount: countMarker(afterBody),
+                    remainingEditorText: afterValue,
+                    candidateClass: pick ? (pick.className || '').toString() : ''
+                };
+            })()
+        `).catch(e => ({ sent: false, error: e.message }));
+
+        if (!minimaxSubmit.sent) {
+            return { sent: false, error: minimaxSubmit.error || 'MiniMax submit did not change page state', details: minimaxSubmit };
+        }
+
+        return { sent: true, method: minimaxSubmit.method };
+    }
+
     if (provider === 'zai') {
         const zaiReady = await webContents.executeJavaScript(`
             (function() {
@@ -2270,6 +2387,23 @@ async function getResponseWithTypingStatus(provider) {
     // Now get the actual response
     let response = await getProviderResponse(provider);
 
+    if (provider === 'minimax') {
+        const looksIncomplete = !response ||
+            response === 'No response captured' ||
+            /^Received\./i.test(response);
+
+        if (looksIncomplete) {
+            for (let attempt = 0; attempt < 3; attempt++) {
+                await sleep(8000);
+                const retry = await getSimpleProviderResponse(provider, '');
+                if (retry && retry !== 'No response captured' && !/^Received\./i.test(retry)) {
+                    response = retry;
+                    break;
+                }
+            }
+        }
+    }
+
     // Clean Perplexity-specific noise (query heading echo, trailing UI elements)
     if (provider === 'perplexity' && response) {
         response = cleanPerplexityResponse(response);
@@ -2324,6 +2458,15 @@ function getSimpleCaptureSelectors(provider) {
         ];
     }
 
+    if (provider === 'minimax') {
+        return [
+            '.message.received .matrix-markdown',
+            '.message.received .message-content',
+            '.matrix-markdown',
+            '.message.received'
+        ];
+    }
+
     return [
         '[data-message-author-role="assistant"]',
         '[data-testid*="assistant"]',
@@ -2372,6 +2515,7 @@ async function getSimpleProviderResponse(provider, oldFingerprint = '') {
         const text = await webContents.executeJavaScript(`
             (function() {
                 const selectors = ${selectorJson};
+                const isMiniMax = ${JSON.stringify(provider === 'minimax')};
                 const badText = [
                     'thinking completed',
                     'stopped this response',
@@ -2389,7 +2533,7 @@ async function getSimpleProviderResponse(provider, oldFingerprint = '') {
                 }
 
                 function normalize(text) {
-                    return (text || '')
+                    let out = (text || '')
                         .replace(/\u00a0/g, ' ')
                         .replace(/Thinking completed\\s*/gi, '')
                         .replace(/Thought for[^\\n]*/gi, '')
@@ -2398,6 +2542,13 @@ async function getSimpleProviderResponse(provider, oldFingerprint = '') {
                         .replace(/Citation sources\\s*\\(\\d+\\)/gi, '')
                         .replace(/\\n{3,}/g, '\\n\\n')
                         .trim();
+                    if (isMiniMax) {
+                        out = out
+                            .replace(/^Received\.[\s\S]{0,200}request[\s\S]*$/i, '')
+                            .replace(/^Thinking Process\\s*\\n[^\\n]*\\n+/i, '')
+                            .trim();
+                    }
+                    return out;
                 }
 
                 const candidates = [];
@@ -2409,6 +2560,7 @@ async function getSimpleProviderResponse(provider, oldFingerprint = '') {
                         if (!text || text.length < 2) continue;
                         const lower = text.toLowerCase();
                         if (badText.some(x => lower === x || lower.startsWith(x + '\\n'))) continue;
+                        if (isMiniMax && /^received\.[\s\S]{0,200}request[\s\S]*$/i.test(text)) continue;
                         if (/^(thinking|thought for|loading|generating|analyzing|searching)\\b/i.test(text) && text.length < 120) continue;
                         candidates.push(text);
                     }
