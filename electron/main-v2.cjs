@@ -1074,6 +1074,225 @@ async function sendToClaude(webContents, message) {
     return { sent: true };
 }
 
+async function installProviderNetworkResponseCapture(webContents, provider) {
+    if (!['qwen', 'deepseek'].includes(provider)) return;
+
+    await webContents.executeJavaScript(String.raw`
+        (() => {
+            const provider = ${JSON.stringify(provider)};
+            const storeRoot = window.__proximaResponseCapture = window.__proximaResponseCapture || {};
+            storeRoot[provider] = {
+                response: '',
+                done: false,
+                source: '',
+                updatedAt: Date.now()
+            };
+
+            const safeTrim = value => typeof value === 'string' ? value.trim() : '';
+            const cleanSseText = value => String(value || '').replace(/\r/g, '');
+            const sseBlocks = value => cleanSseText(value).split('\n\n').filter(Boolean);
+            const sseDataLine = block => String(block || '').split('\n').find(part => safeTrim(part).startsWith('data:')) || '';
+            const ssePayload = block => {
+                const line = sseDataLine(block);
+                return line ? line.replace(/^data:\s*/, '').trim() : '';
+            };
+
+            function store(providerName, url, response) {
+                const trimmed = safeTrim(response);
+                if (!trimmed) return;
+                storeRoot[providerName] = {
+                    response: trimmed,
+                    done: true,
+                    source: String(url || ''),
+                    updatedAt: Date.now()
+                };
+            }
+
+            function extractQwenFromChatDetail(text) {
+                try {
+                    const obj = JSON.parse(text);
+                    const data = obj && obj.data ? obj.data : {};
+                    const history = data.chat && data.chat.history && data.chat.history.messages ? data.chat.history.messages : {};
+                    const messages = Array.isArray(data.messages) ? data.messages : Object.values(history || {});
+                    for (let i = messages.length - 1; i >= 0; i--) {
+                        const msg = messages[i] || {};
+                        if (msg.role !== 'assistant') continue;
+                        const contentList = Array.isArray(msg.content_list) ? msg.content_list : [];
+                        const answer = contentList
+                            .filter(item => item && item.phase === 'answer' && typeof item.content === 'string')
+                            .map(item => item.content)
+                            .join('')
+                            .trim();
+                        if (answer) return answer;
+                        if (typeof msg.content === 'string' && msg.content.trim()) return msg.content.trim();
+                    }
+                } catch (e) {}
+                return '';
+            }
+
+            function extractQwenFromStream(text) {
+                try {
+                    let answer = '';
+                    for (const block of sseBlocks(text)) {
+                        const raw = ssePayload(block);
+                        if (!raw || raw === '[DONE]') continue;
+                        try {
+                            const obj = JSON.parse(raw);
+                            const choices = Array.isArray(obj && obj.choices) ? obj.choices : [];
+                            const delta = choices[0] && choices[0].delta ? choices[0].delta : null;
+                            if (delta && delta.phase === 'answer' && typeof delta.content === 'string') {
+                                answer += delta.content;
+                            }
+                        } catch (e) {}
+                    }
+                    return answer.trim();
+                } catch (e) {}
+                return '';
+            }
+
+            function extractDeepSeekFromStream(text) {
+                try {
+                    let answer = '';
+                    let currentType = '';
+                    for (const block of sseBlocks(text)) {
+                        const raw = ssePayload(block);
+                        if (!raw || raw === '[DONE]') continue;
+                        let obj = null;
+                        try { obj = JSON.parse(raw); } catch (e) { continue; }
+
+                        const topFragments = obj && obj.v && obj.v.response && Array.isArray(obj.v.response.fragments)
+                            ? obj.v.response.fragments
+                            : null;
+                        if (topFragments) {
+                            for (const frag of topFragments) {
+                                if (frag && frag.type === 'RESPONSE') {
+                                    answer += frag.content || '';
+                                    currentType = 'RESPONSE';
+                                } else if (frag && frag.type) {
+                                    currentType = frag.type;
+                                }
+                            }
+                            continue;
+                        }
+
+                        if (obj && obj.p === 'response/fragments' && Array.isArray(obj.v)) {
+                            for (const frag of obj.v) {
+                                if (frag && frag.type === 'RESPONSE') {
+                                    answer += frag.content || '';
+                                    currentType = 'RESPONSE';
+                                } else if (frag && frag.type) {
+                                    currentType = frag.type;
+                                }
+                            }
+                            continue;
+                        }
+
+                        if (obj && obj.p === 'response/fragments/-1/content' && currentType === 'RESPONSE' && typeof obj.v === 'string') {
+                            answer += obj.v;
+                            continue;
+                        }
+
+                        if (obj && !obj.p && currentType === 'RESPONSE' && typeof obj.v === 'string') {
+                            answer += obj.v;
+                        }
+                    }
+                    return answer.trim();
+                } catch (e) {}
+                return '';
+            }
+
+            function processPayload(url, text) {
+                const normalizedUrl = String(url || '');
+                if (normalizedUrl.includes('/api/v2/chat/completions')) {
+                    const answer = extractQwenFromStream(text);
+                    if (answer) store('qwen', normalizedUrl, answer);
+                }
+                if (normalizedUrl.includes('/api/v2/chats/')) {
+                    const answer = extractQwenFromChatDetail(text);
+                    if (answer) store('qwen', normalizedUrl, answer);
+                }
+                if (normalizedUrl.includes('/api/v0/chat/completion')) {
+                    const answer = extractDeepSeekFromStream(text);
+                    if (answer) store('deepseek', normalizedUrl, answer);
+                }
+            }
+
+            if (storeRoot.__hooked) return true;
+            storeRoot.__hooked = true;
+
+            const shouldCapture = url => {
+                const normalizedUrl = String(url || '');
+                return normalizedUrl.includes('/api/v2/chat/completions')
+                    || normalizedUrl.includes('/api/v2/chats/')
+                    || normalizedUrl.includes('/api/v0/chat/completion');
+            };
+
+            const originalFetch = window.fetch.bind(window);
+            window.fetch = async function(...args) {
+                const res = await originalFetch(...args);
+                try {
+                    const target = args[0];
+                    const url = String(target && target.url ? target.url : target || '');
+                    if (shouldCapture(url)) {
+                        const clone = res.clone();
+                        const text = await clone.text();
+                        processPayload(url, text);
+                    }
+                } catch (e) {}
+                return res;
+            };
+
+            const originalOpen = XMLHttpRequest.prototype.open;
+            const originalSend = XMLHttpRequest.prototype.send;
+            XMLHttpRequest.prototype.open = function(method, url, ...rest) {
+                this.__proximaUrl = url;
+                return originalOpen.call(this, method, url, ...rest);
+            };
+            XMLHttpRequest.prototype.send = function(...args) {
+                this.addEventListener('load', function() {
+                    try {
+                        const url = String(this.__proximaUrl || '');
+                        if (shouldCapture(url)) {
+                            processPayload(url, String(this.responseText || ''));
+                        }
+                    } catch (e) {}
+                });
+                return originalSend.apply(this, args);
+            };
+
+            return true;
+        })()
+    `);
+}
+
+async function waitForProviderNetworkResponse(webContents, provider, timeoutMs = 15000) {
+    if (!['qwen', 'deepseek'].includes(provider)) return '';
+
+    const started = Date.now();
+    while (Date.now() - started < timeoutMs) {
+        const captured = await webContents.executeJavaScript(`
+            (function() {
+                const state = window.__proximaResponseCapture && window.__proximaResponseCapture[${JSON.stringify(provider)}];
+                if (!state) return { response: '', done: false, source: '' };
+                return {
+                    response: typeof state.response === 'string' ? state.response : '',
+                    done: !!state.done,
+                    source: state.source || ''
+                };
+            })()
+        `).catch(() => ({ response: '', done: false, source: '' }));
+
+        if (captured && captured.response && captured.response.trim()) {
+            console.log(`[${provider}] Network capture succeeded from ${captured.source || 'unknown source'} (${captured.response.length} chars)`);
+            return captured.response.trim();
+        }
+
+        await sleep(500);
+    }
+
+    return '';
+}
+
 async function sendToGemini(webContents, message) {
     console.log('[Gemini] Sending message...');
 
@@ -1278,98 +1497,83 @@ async function sendToModernProvider(webContents, provider, message) {
 
     await sleep(500);
 
+    if (provider === 'qwen' || provider === 'deepseek') {
+        await installProviderNetworkResponseCapture(webContents, provider);
+    }
+
     if (provider === 'qwen') {
-        const qwenReady = await webContents.executeJavaScript(`
-            (function() {
-                const input = document.querySelector('textarea.message-input-textarea, textarea[placeholder*="help"], textarea');
-                if (!input || input.offsetParent === null) return { found: false };
-                input.focus();
-                input.click();
-                const proto = window.HTMLTextAreaElement.prototype;
-                const desc = Object.getOwnPropertyDescriptor(proto, 'value');
-                if (desc && typeof desc.set === 'function') {
-                    desc.set.call(input, '');
-                } else {
-                    input.value = '';
-                }
-                input.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, data: '', inputType: 'deleteContentBackward' }));
-                input.dispatchEvent(new Event('change', { bubbles: true }));
-                return { found: true };
-            })()
-        `).catch(() => ({ found: false }));
-
-        if (!qwenReady.found) {
-            return { sent: false, error: 'No Qwen input field found' };
-        }
-
-        await sleep(250);
-
-        const qwenTyped = await webContents.executeJavaScript(`
-            (function() {
+        const runQwenSendAttempt = async () => webContents.executeJavaScript(`
+            (async function() {
                 const text = ${JSON.stringify(message)};
+                const visible = el => !!(el && (el.offsetParent !== null || el.getClientRects().length > 0));
                 const input = document.querySelector('textarea.message-input-textarea, textarea[placeholder*="help"], textarea');
-                if (!input) return { success: false, error: 'input missing' };
+                if (!visible(input)) return { sent: false, error: 'No Qwen input field found' };
+
                 input.focus();
                 const proto = window.HTMLTextAreaElement.prototype;
                 const desc = Object.getOwnPropertyDescriptor(proto, 'value');
-                if (desc && typeof desc.set === 'function') {
-                    desc.set.call(input, text);
-                } else {
-                    input.value = text;
-                }
+                if (desc && typeof desc.set === 'function') desc.set.call(input, text);
+                else input.value = text;
                 input.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, data: text, inputType: 'insertText' }));
                 input.dispatchEvent(new Event('change', { bubbles: true }));
-                input.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: ' ', code: 'Space' }));
-                input.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: ' ', code: 'Space' }));
-                return { success: true, value: input.value, disabled: !!document.querySelector('button.send-button')?.disabled, href: location.href };
-            })()
-        `).catch(e => ({ success: false, error: e.message }));
 
-        if (!qwenTyped.success || !qwenTyped.value || !qwenTyped.value.includes(message.substring(0, Math.min(16, message.length)))) {
-            return { sent: false, error: `Failed typing into Qwen: ${qwenTyped.error || 'message not present after native input'}` };
-        }
+                await new Promise(resolve => setTimeout(resolve, 800));
 
-        await sleep(500);
-
-        const qwenClicked = await webContents.executeJavaScript(`
-            (function() {
                 const btn = document.querySelector('button.send-button');
-                if (btn && !btn.disabled && (btn.offsetParent !== null || btn.getClientRects().length > 0)) {
+                let method = 'none';
+                if (visible(btn) && !btn.disabled) {
+                    btn.focus();
+                    btn.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+                    btn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
                     btn.click();
-                    return { clicked: true, method: 'button' };
-                }
-                const input = document.querySelector('textarea.message-input-textarea, textarea');
-                if (input) {
+                    btn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+                    btn.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
+                    method = 'button-pointer-click';
+                } else {
                     input.focus();
                     input.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Enter', code: 'Enter' }));
                     input.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'Enter', code: 'Enter' }));
-                    return { clicked: true, method: 'keyboard-dispatch' };
+                    method = 'keyboard-dispatch';
                 }
-                return { clicked: false };
-            })()
-        `).catch(() => ({ clicked: false }));
 
-        if (!qwenClicked.clicked) {
-            await webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Enter' });
-            await webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Enter' });
-        }
-
-        await sleep(1000);
-        const qwenSentState = await webContents.executeJavaScript(`
-            (function() {
-                const input = document.querySelector('textarea.message-input-textarea, textarea[placeholder*="help"], textarea');
+                await new Promise(resolve => setTimeout(resolve, 4000));
                 const body = document.body?.innerText || '';
                 return {
+                    sent: true,
+                    method,
                     href: location.href,
-                    value: input ? (input.value || '') : '',
+                    value: input.value || '',
                     includes: body.includes(${JSON.stringify(message.substring(0, Math.min(16, message.length)))}),
                     thinkingCompleted: /thinking completed/i.test(body),
                     body: body.slice(0, 1200)
                 };
             })()
-        `).catch(() => ({ href: '', value: '' }));
+        `).catch(e => ({ sent: false, error: e.message }));
 
-        const likelySent = (qwenSentState.href && qwenSentState.href.includes('/c/')) || qwenSentState.includes || qwenSentState.thinkingCompleted;
+        let qwenSendAttempt = await runQwenSendAttempt();
+        if (!qwenSendAttempt.sent) {
+            return qwenSendAttempt;
+        }
+
+        let qwenNetworkResponse = await waitForProviderNetworkResponse(webContents, 'qwen', 18000);
+        if (qwenNetworkResponse) {
+            return { sent: true, response: qwenNetworkResponse };
+        }
+
+        let likelySent = (qwenSendAttempt.href && qwenSendAttempt.href.includes('/c/')) || qwenSendAttempt.includes || qwenSendAttempt.thinkingCompleted;
+        if (!likelySent) {
+            console.log('[qwen] First submit attempt showed no page change, retrying once...');
+            qwenSendAttempt = await runQwenSendAttempt();
+            if (!qwenSendAttempt.sent) {
+                return qwenSendAttempt;
+            }
+            qwenNetworkResponse = await waitForProviderNetworkResponse(webContents, 'qwen', 18000);
+            if (qwenNetworkResponse) {
+                return { sent: true, response: qwenNetworkResponse };
+            }
+            likelySent = (qwenSendAttempt.href && qwenSendAttempt.href.includes('/c/')) || qwenSendAttempt.includes || qwenSendAttempt.thinkingCompleted;
+        }
+
         if (!likelySent) {
             return { sent: false, error: 'Qwen native input succeeded but submit did not change page state' };
         }
@@ -1432,6 +1636,11 @@ async function sendToModernProvider(webContents, provider, message) {
 
         if (!deepseekResult.sent) {
             return deepseekResult;
+        }
+
+        const deepseekNetworkResponse = await waitForProviderNetworkResponse(webContents, 'deepseek', 18000);
+        if (deepseekNetworkResponse) {
+            return { sent: true, response: deepseekNetworkResponse };
         }
 
         return { sent: true };
@@ -1779,6 +1988,32 @@ async function getResponseWithTypingStatus(provider) {
     const webContents = browserManager.getWebContents(provider);
     if (!webContents) {
         throw new Error(`Provider ${provider} not initialized`);
+    }
+
+    if (provider === 'qwen' || provider === 'deepseek') {
+        const networkCaptured = await webContents.executeJavaScript(`
+            (function() {
+                const root = window.__proximaResponseCapture || {};
+                const state = root[${JSON.stringify(provider)}];
+                const response = state && typeof state.response === 'string' ? state.response.trim() : '';
+                if (!response) return '';
+                root[${JSON.stringify(provider)}] = {
+                    response: '',
+                    done: false,
+                    source: '',
+                    updatedAt: Date.now()
+                };
+                return response;
+            })()
+        `).catch(() => '');
+        if (networkCaptured) {
+            console.log(`[getResponseWithTyping] ✔ Using network-captured response for ${provider} (${networkCaptured.length} chars)`);
+            return {
+                typingStarted: true,
+                typingStopped: true,
+                response: networkCaptured
+            };
+        }
     }
 
     // Capture OLD fingerprint BEFORE getting response (for detecting new vs old responses)
