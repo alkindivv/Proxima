@@ -1549,13 +1549,19 @@ async function getResponseWithTypingStatus(provider) {
     // CHECK API CACHE FIRST — if API already captured the response, skip DOM scraping entirely
     if (_apiResponseCache[provider]) {
         const cached = _apiResponseCache[provider];
-        delete _apiResponseCache[provider]; // Clear after use
-        console.log(`[getResponseWithTyping] \u2714 Using API-cached response for ${provider} (${cached.length} chars) — DOM scraping SKIPPED`);
-        return {
-            typingStarted: true,
-            typingStopped: true,
-            response: cached
-        };
+        const looksLikeGeminiConversationId = provider === 'gemini' && /^c_[a-f0-9]+$/i.test((cached || '').trim());
+        if (looksLikeGeminiConversationId) {
+            console.log(`[getResponseWithTyping] Ignoring invalid Gemini API cache value: ${cached}`);
+            delete _apiResponseCache[provider];
+        } else {
+            delete _apiResponseCache[provider]; // Clear after use
+            console.log(`[getResponseWithTyping] \u2714 Using API-cached response for ${provider} (${cached.length} chars) — DOM scraping SKIPPED`);
+            return {
+                typingStarted: true,
+                typingStopped: true,
+                response: cached
+            };
+        }
     }
 
     const webContents = browserManager.getWebContents(provider);
@@ -1704,6 +1710,188 @@ async function getResponseWithTypingStatus(provider) {
     };
 }
 
+function useSimpleDomCapture(provider) {
+    return ['claude', 'gemini', 'kimi', 'minimax', 'mimo', 'qwen', 'zai', 'deepseek'].includes(provider);
+}
+
+function getSimpleCaptureSelectors(provider) {
+    if (provider === 'claude') {
+        return [
+            '[data-testid="chat-message-turn"]',
+            '[data-testid="assistant-turn"]',
+            '[data-testid="ai-message"]',
+            'div[data-turn-role="assistant"]',
+            'div[data-role="assistant"]',
+            'div[data-message-role="assistant"]',
+            '.font-claude-message',
+            '[class*="assistant"][class*="message"]',
+            '.prose',
+            '[class*="prose"]'
+        ];
+    }
+
+    if (provider === 'gemini') {
+        return [
+            'message-content',
+            '.message-content',
+            '.model-response-text',
+            '[class*="response-content"]',
+            'model-response',
+            '[class*="markdown"]'
+        ];
+    }
+
+    if (provider === 'qwen') {
+        return [
+            '.response-message-content',
+            '.phase-answer',
+            '.qwen-markdown',
+            '[class*="markdown"]',
+            '.markdown',
+            '[class*="response"]'
+        ];
+    }
+
+    return [
+        '[data-message-author-role="assistant"]',
+        '[data-testid*="assistant"]',
+        '[data-testid*="answer"]',
+        '[class*="assistant"][class*="message"]',
+        '[class*="response"]',
+        'article',
+        '.markdown',
+        '[class*="markdown"]',
+        '.prose',
+        '[class*="prose"]'
+    ];
+}
+
+async function getSimpleProviderResponse(provider, oldFingerprint = '') {
+    const webContents = browserManager.getWebContents(provider);
+    const selectors = getSimpleCaptureSelectors(provider);
+    const selectorJson = JSON.stringify(selectors);
+    let lastText = '';
+    let stableCount = 0;
+    const stableThreshold = provider === 'claude' ? 4 : 3;
+
+    async function getMiMoBodyFallback() {
+        try {
+            const body = await webContents.executeJavaScript(`
+                (function() {
+                    return (document.body && (document.body.innerText || document.body.textContent) || '').trim();
+                })()
+            `);
+            const cleaned = (body || '')
+                .replace(/\r/g, '')
+                .replace(/Model demo platform\.[^\n]*/gi, '')
+                .replace(/Citation sources\s*\(\d+\)/gi, '')
+                .trim();
+            const thoughtMatch = cleaned.match(/Thought for[^\n]*\n+([\s\S]{1,1000})$/i);
+            if (thoughtMatch && thoughtMatch[1]) {
+                return thoughtMatch[1].trim();
+            }
+            return '';
+        } catch (e) {
+            return '';
+        }
+    }
+
+    for (let i = 0; i < 50; i++) {
+        const text = await webContents.executeJavaScript(`
+            (function() {
+                const selectors = ${selectorJson};
+                const badText = [
+                    'thinking completed',
+                    'stopped this response',
+                    'model demo platform',
+                    'citation sources',
+                    'free trial',
+                    'history'
+                ];
+
+                function isVisible(el) {
+                    if (!el) return false;
+                    if (el.offsetParent !== null) return true;
+                    const style = window.getComputedStyle(el);
+                    return style && style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+                }
+
+                function normalize(text) {
+                    return (text || '')
+                        .replace(/\u00a0/g, ' ')
+                        .replace(/Thinking completed\\s*/gi, '')
+                        .replace(/Thought for[^\\n]*/gi, '')
+                        .replace(/Stopped this response,?\\s*you can re-?edit[^\\n]*/gi, '')
+                        .replace(/Model demo platform\.[^\\n]*/gi, '')
+                        .replace(/Citation sources\\s*\\(\\d+\\)/gi, '')
+                        .replace(/\\n{3,}/g, '\\n\\n')
+                        .trim();
+                }
+
+                const candidates = [];
+                for (const selector of selectors) {
+                    const nodes = document.querySelectorAll(selector);
+                    for (const node of nodes) {
+                        if (!isVisible(node)) continue;
+                        const text = normalize(node.innerText || node.textContent || '');
+                        if (!text || text.length < 2) continue;
+                        const lower = text.toLowerCase();
+                        if (badText.some(x => lower === x || lower.startsWith(x + '\\n'))) continue;
+                        if (/^(thinking|thought for|loading|generating|analyzing|searching)\\b/i.test(text) && text.length < 120) continue;
+                        candidates.push(text);
+                    }
+                }
+
+                for (let i = candidates.length - 1; i >= 0; i--) {
+                    if (candidates[i] && candidates[i].length > 0) return candidates[i];
+                }
+
+                return '';
+            })()
+        `);
+
+        const cleaned = (text || '').trim();
+        if (cleaned) {
+            const currentFingerprint = cleaned.substring(0, 200).trim();
+            if (oldFingerprint) {
+                const sameAsOld = currentFingerprint === oldFingerprint ||
+                    oldFingerprint.startsWith(currentFingerprint.substring(0, Math.min(100, currentFingerprint.length))) ||
+                    currentFingerprint.startsWith(oldFingerprint.substring(0, Math.min(100, oldFingerprint.length)));
+                if (sameAsOld) {
+                    await sleep(500);
+                    continue;
+                }
+            }
+
+            if (cleaned === lastText) {
+                stableCount++;
+                if (stableCount >= stableThreshold) {
+                    if (responseState[provider]) {
+                        responseState[provider].fingerprint = '';
+                    }
+                    console.log(`[getSimpleProviderResponse] ${provider}: captured ${cleaned.length} chars`);
+                    return cleaned;
+                }
+            } else {
+                lastText = cleaned;
+                stableCount = 0;
+            }
+        }
+
+        await sleep(500);
+    }
+
+    if ((!lastText || lastText === 'No response captured') && provider === 'mimo') {
+        const mimoFallback = await getMiMoBodyFallback();
+        if (mimoFallback) {
+            console.log(`[getSimpleProviderResponse] mimo: body fallback captured ${mimoFallback.length} chars`);
+            return mimoFallback;
+        }
+    }
+
+    return lastText || 'No response captured';
+}
+
 async function getProviderResponse(provider, customSelector = null) {
     const webContents = browserManager.getWebContents(provider);
     if (!webContents) {
@@ -1801,6 +1989,10 @@ async function getProviderResponse(provider, customSelector = null) {
 
         // Small delay for DOM to settle (Perplexity needs more time for math/LaTeX rendering)
         await sleep((provider === 'claude' || provider === 'perplexity') ? 1500 : 500);
+
+    if (useSimpleDomCapture(provider)) {
+        return await getSimpleProviderResponse(provider, oldFingerprint);
+    }
 
     // STEP 4: DOM polling for response text
     let lastText = '';
