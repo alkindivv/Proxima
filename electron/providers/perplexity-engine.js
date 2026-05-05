@@ -8,8 +8,14 @@
     if (window.__proximaPerplexity) return;
 
     var TIMEOUT = 360000;
+    var DEFAULT_MODEL_PREFERENCE = 'claude46sonnetthinking';
     var _sessionToken = null;
     var _lastBackendUuid = null;
+    var _lastMeta = {
+        requestedModelPreference: DEFAULT_MODEL_PREFERENCE,
+        displayModel: null,
+        backendUuid: null
+    };
 
     // ─── Session Token ──────────────────────────────
 
@@ -97,6 +103,11 @@
 
                     if (parsed.backend_uuid) {
                         backendUuid = parsed.backend_uuid;
+                        _lastMeta.backendUuid = parsed.backend_uuid;
+                    }
+
+                    if (parsed.display_model && typeof parsed.display_model === 'string') {
+                        _lastMeta.displayModel = parsed.display_model;
                     }
 
                     // Answer lives in blocks[].markdown_block.answer
@@ -151,9 +162,17 @@
 
     // ─── Send Message ───────────────────────────────
 
-    async function send(message) {
+    async function send(message, options) {
+        options = options || {};
         var sessionToken = _getSessionToken();
         var frontendUuid = _uuid();
+        var requestedModelPreference = (options.modelPreference && String(options.modelPreference).trim()) || DEFAULT_MODEL_PREFERENCE;
+
+        _lastMeta = {
+            requestedModelPreference: requestedModelPreference,
+            displayModel: null,
+            backendUuid: _lastBackendUuid || null
+        };
 
         var params = {
             last_backend_uuid: _lastBackendUuid || _uuid(),
@@ -165,7 +184,7 @@
             sources: ['web'],
             frontend_uuid: frontendUuid,
             mode: 'copilot',
-            model_preference: 'turbo',
+            model_preference: requestedModelPreference,
             is_related_query: false,
             is_sponsored: false,
             prompt_source: 'user',
@@ -245,9 +264,22 @@
     function newConversation() {
         _lastBackendUuid = null;
         _sessionToken = null;
+        _lastMeta = {
+            requestedModelPreference: DEFAULT_MODEL_PREFERENCE,
+            displayModel: null,
+            backendUuid: null
+        };
         console.log('[Proxima Perplexity] Conversation reset');
     }
 
-    window.__proximaPerplexity = { send: send, newConversation: newConversation };
+    function getLastMeta() {
+        return {
+            requestedModelPreference: _lastMeta.requestedModelPreference || DEFAULT_MODEL_PREFERENCE,
+            displayModel: _lastMeta.displayModel || null,
+            backendUuid: _lastMeta.backendUuid || _lastBackendUuid || null
+        };
+    }
+
+    window.__proximaPerplexity = { send: send, newConversation: newConversation, getLastMeta: getLastMeta };
     console.log('[Proxima] Perplexity engine loaded');
 })();

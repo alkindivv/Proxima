@@ -272,7 +272,9 @@
 
     // ─── Send Message ───────────────────────────────
 
-    async function send(message) {
+    async function send(message, options) {
+        options = options || {};
+        var requestedModel = (options.model && String(options.model).trim()) || DEFAULT_MODEL;
         var token = await _getToken();
 
         // OAI-Device-Id header required for API auth
@@ -299,7 +301,7 @@
         if (powData.proofToken) headers['Openai-Sentinel-Proof-Token'] = powData.proofToken;
 
         _lastMeta = {
-            requestedModel: DEFAULT_MODEL,
+            requestedModel: requestedModel,
             actualModel: null,
             conversationId: _conversationId,
             parentMessageId: _parentMessageId
@@ -313,7 +315,7 @@
                 content: { content_type: 'text', parts: [message] },
                 metadata: {}
             }],
-            model: DEFAULT_MODEL,
+            model: requestedModel,
 
             parent_message_id: _parentMessageId || crypto.randomUUID(),
             timezone_offset_min: new Date().getTimezoneOffset(),

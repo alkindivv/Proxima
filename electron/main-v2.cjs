@@ -785,6 +785,34 @@ async function handleMCPRequest(request) {
 
 // Provider-Specific Interaction Functions
 
+const PERPLEXITY_PREFERRED_MODEL = 'claude46sonnetthinking';
+const PERPLEXITY_FALLBACK_CHATGPT_MODEL = 'gpt-5-4-thinking';
+
+async function tryPerplexityFallbackToChatGPT(message, reason = 'unknown') {
+    const chatgptWebContents = browserManager.getWebContents('chatgpt');
+    if (!chatgptWebContents) {
+        throw new Error(`Perplexity primary failed (${reason}) and ChatGPT fallback is not initialized`);
+    }
+
+    console.log(`[perplexity] Falling back to ChatGPT model ${PERPLEXITY_FALLBACK_CHATGPT_MODEL} because ${reason}`);
+    const fallbackResponse = await providerAPI.sendViaAPI('chatgpt', chatgptWebContents, message, {
+        model: PERPLEXITY_FALLBACK_CHATGPT_MODEL
+    });
+
+    if (!fallbackResponse || !fallbackResponse.trim()) {
+        throw new Error(`Perplexity fallback to ChatGPT returned empty response (${reason})`);
+    }
+
+    _apiResponseCache.chatgpt = fallbackResponse;
+    _apiResponseCache.perplexity = fallbackResponse;
+    return {
+        response: fallbackResponse,
+        fallbackProvider: 'chatgpt',
+        fallbackModel: PERPLEXITY_FALLBACK_CHATGPT_MODEL,
+        fallbackReason: reason
+    };
+}
+
 async function sendMessageToProvider(provider, message, forceDOM = false) {
     const webContents = browserManager.getWebContents(provider);
     if (!webContents) {
@@ -797,7 +825,10 @@ async function sendMessageToProvider(provider, message, forceDOM = false) {
     if (!forceDOM && !preferDOMForProvider) {
         try {
             console.log(`[${provider}] Trying API-first approach...`);
-            const apiResponse = await providerAPI.sendViaAPI(provider, webContents, message);
+            const apiOptions = provider === 'perplexity'
+                ? { modelPreference: PERPLEXITY_PREFERRED_MODEL }
+                : {};
+            const apiResponse = await providerAPI.sendViaAPI(provider, webContents, message, apiOptions);
             if (apiResponse && apiResponse.length > 0) {
                 const looksLikeGeminiConversationId = provider === 'gemini' && /^c_[a-f0-9]+$/i.test((apiResponse || '').trim());
                 if (looksLikeGeminiConversationId) {
@@ -811,10 +842,16 @@ async function sendMessageToProvider(provider, message, forceDOM = false) {
             }
             console.log(`[${provider}] API returned empty \u2014 falling back to DOM`);
             delete _apiResponseCache[provider];
+            if (provider === 'perplexity') {
+                return await tryPerplexityFallbackToChatGPT(message, 'empty API response');
+            }
         } catch (apiErr) {
             console.log(`[${provider}] API failed: ${apiErr.message} — falling back to DOM`);
             // Clear stale cache so getResponseWithTyping doesn't return old data
             delete _apiResponseCache[provider];
+            if (provider === 'perplexity') {
+                return await tryPerplexityFallbackToChatGPT(message, apiErr.message || 'API failure');
+            }
         }
     } else if (preferDOMForProvider && !forceDOM) {
         console.log(`[${provider}] Skipping API-first so preferred UI model selection can be enforced before send`);
