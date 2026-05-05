@@ -825,6 +825,9 @@ async function sendMessageToProvider(provider, message, forceDOM = false) {
     if (!forceDOM && !preferDOMForProvider) {
         try {
             console.log(`[${provider}] Trying API-first approach...`);
+            if (provider === 'gemini') {
+                await ensureGeminiPreferredMode(webContents);
+            }
             const apiOptions = provider === 'perplexity'
                 ? { modelPreference: PERPLEXITY_PREFERRED_MODEL }
                 : {};
@@ -1474,8 +1477,113 @@ async function waitForProviderNetworkResponse(webContents, provider, timeoutMs =
     return '';
 }
 
+async function ensureGeminiPreferredMode(webContents) {
+    const result = await webContents.executeJavaScript(`
+        (async function() {
+            const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+            const getText = (el) => String((el && (el.innerText || el.textContent)) || '').replace(/\s+/g, ' ').trim();
+            const visible = (el) => {
+                if (!el) return false;
+                const rect = el.getBoundingClientRect();
+                const style = window.getComputedStyle(el);
+                return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+            };
+            const getModeButton = () => Array.from(document.querySelectorAll('button')).find(btn => {
+                const aria = String(btn.getAttribute('aria-label') || '').toLowerCase();
+                const text = getText(btn);
+                const cls = String(btn.className || '').toLowerCase();
+                return visible(btn) && (
+                    aria.includes('buka pemilih mode') ||
+                    aria.includes('open mode selector') ||
+                    cls.includes('input-area-switch') ||
+                    ((text === 'Cepat' || text === 'Penalaran' || text === 'Pro' || text === 'Fast' || text === 'Reasoning') && cls.includes('mdc-button'))
+                );
+            });
+            const getMenuItems = () => Array.from(document.querySelectorAll('button[role="menuitem"], .bard-mode-list-button'));
+            const findProItem = () => getMenuItems().find(item => {
+                const text = getText(item);
+                return /^Pro\b/i.test(text) || /3\.1 Pro/i.test(text);
+            }) || Array.from(document.querySelectorAll('button')).filter(visible).find(item => {
+                const text = getText(item);
+                return /^Pro\b/i.test(text) && /3\.1 Pro|coding|matematika|advanced/i.test(text);
+            });
+            const isMenuOpen = () => getMenuItems().length > 0;
+            const closeMenu = async () => {
+                if (!isMenuOpen()) return;
+                document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+                document.dispatchEvent(new KeyboardEvent('keyup', { key: 'Escape', bubbles: true }));
+                await sleep(180);
+                if (isMenuOpen()) {
+                    const btn = getModeButton();
+                    if (btn) btn.click();
+                    await sleep(180);
+                }
+            };
+            const getCurrentLabel = () => {
+                const btn = getModeButton();
+                return btn ? getText(btn) : '';
+            };
+
+            for (let attempt = 0; attempt < 8; attempt++) {
+                const before = getCurrentLabel();
+                if (before === 'Pro') {
+                    await closeMenu();
+                    return { ok: true, changed: false, selected: before, attempt };
+                }
+
+                const modeButton = getModeButton();
+                if (!modeButton) {
+                    await sleep(400);
+                    continue;
+                }
+
+                modeButton.click();
+                await sleep(350 + attempt * 120);
+
+                const proItem = findProItem();
+                if (!proItem) {
+                    await closeMenu();
+                    await sleep(250);
+                    continue;
+                }
+
+                proItem.click();
+                await sleep(700);
+                const after = getCurrentLabel();
+                await closeMenu();
+                if (after === 'Pro') {
+                    return {
+                        ok: true,
+                        changed: after !== before,
+                        selected: after,
+                        before,
+                        attempt
+                    };
+                }
+                await sleep(250);
+            }
+
+            return {
+                ok: false,
+                error: 'Gemini Pro mode option not found',
+                current: getCurrentLabel(),
+                options: getMenuItems().map(item => getText(item)),
+                body: (document.body && document.body.innerText ? document.body.innerText.slice(0, 1600) : '')
+            };
+        })()
+    `);
+
+    if (!result || !result.ok) {
+        throw new Error(result && result.error ? result.error : 'Failed to enforce Gemini Pro mode');
+    }
+
+    console.log(`[Gemini] Preferred mode ready: ${result.selected} changed=${!!result.changed}`);
+    return result;
+}
+
 async function sendToGemini(webContents, message) {
     console.log('[Gemini] Sending message...');
+    await ensureGeminiPreferredMode(webContents);
 
     // IMPORTANT: Capture current response fingerprint BEFORE sending new message
     // This helps us detect when the NEW response appears

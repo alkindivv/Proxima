@@ -55,6 +55,17 @@
     // Gemini returns deeply nested JSON arrays. This parser tries multiple
     // extraction paths and falls back to recursive string search.
 
+    function _looksLikeNonReplyToken(value) {
+        if (typeof value !== 'string') return false;
+        var text = value.trim();
+        if (!text) return true;
+        if (/^(c|r|rc)_[a-f0-9]+$/i.test(text)) return true;
+        if (/^(GEMINI|Gemini)$/i.test(text)) return true;
+        if (/^SWML_DESCRIPTION_FROM_YOUR_INTERNET_ADDRESS$/i.test(text)) return true;
+        if (/^\/\/www\.google\.com\/maps\/vt\/data=/i.test(text)) return true;
+        return false;
+    }
+
     function _parseResponse(rawText) {
         var cleanText = rawText.replace(/^\)\]}'?\s*\n?/, '');
         var lines = cleanText.split('\n').filter(function(l) { return l.trim().length > 0; });
@@ -141,6 +152,7 @@
 
 
         var replyText = '';
+        var replyScore = -1;
 
         for (var i = 0; i < allItems.length; i++) {
             var item = allItems[i];
@@ -148,20 +160,23 @@
             try {
                 var inner = JSON.parse(item[idx]);
                 var paths = [
-                    function() { return (Array.isArray(inner[0]) && typeof inner[0][0] === 'string') ? inner[0][0] : ''; },
-                    function() { return (inner[4] && inner[4][0] && inner[4][0][1] && inner[4][0][1][0]) || ''; },
-                    function() { return (inner[4] && inner[4][0] && inner[4][0][1]) || ''; },
-                    function() { return (Array.isArray(inner[1]) && typeof inner[1][0] === 'string') ? inner[1][0] : ''; },
-                    function() { return (inner[0] && inner[0][1] && inner[0][1][0]) || ''; },
-                    function() { return (inner[3] && inner[3][0] && inner[3][0][0]) || ''; },
-                    function() { return (inner[3] && inner[3][1] && inner[3][1][0]) || ''; }
+                    { score: 100, get: function() { return (inner[4] && inner[4][0] && inner[4][0][1] && inner[4][0][1][0]) || ''; } },
+                    { score: 95, get: function() { return (inner[4] && inner[4][0] && inner[4][0][1]) || ''; } },
+                    { score: 80, get: function() { return (Array.isArray(inner[0]) && typeof inner[0][0] === 'string') ? inner[0][0] : ''; } },
+                    { score: 70, get: function() { return (inner[0] && inner[0][1] && inner[0][1][0]) || ''; } },
+                    { score: 60, get: function() { return (inner[3] && inner[3][0] && inner[3][0][0]) || ''; } },
+                    { score: 50, get: function() { return (inner[3] && inner[3][1] && inner[3][1][0]) || ''; } },
+                    { score: 10, get: function() { return (Array.isArray(inner[1]) && typeof inner[1][0] === 'string') ? inner[1][0] : ''; } }
                 ];
 
                 for (var pi = 0; pi < paths.length; pi++) {
                     try {
-                        var candidate = paths[pi]();
-                        if (typeof candidate === 'string' && candidate.length > 10 && candidate.length > replyText.length) {
-                            replyText = candidate;
+                        var candidate = paths[pi].get();
+                        if (typeof candidate === 'string' && candidate.length > 10 && !_looksLikeNonReplyToken(candidate)) {
+                            if (paths[pi].score > replyScore || (paths[pi].score === replyScore && candidate.length > replyText.length)) {
+                                replyText = candidate;
+                                replyScore = paths[pi].score;
+                            }
                         }
                     } catch(e) {}
                 }
@@ -181,7 +196,10 @@
                         return longest;
                     }
                     var longest = findLongest(inner, 0);
-                    if (longest.length > 50 && longest.length > replyText.length) replyText = longest;
+                    if (longest.length > 50 && !_looksLikeNonReplyToken(longest) && 1 > replyScore) {
+                        replyText = longest;
+                        replyScore = 1;
+                    }
                 }
             } catch(e) {}
         }
