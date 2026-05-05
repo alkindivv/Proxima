@@ -9,12 +9,14 @@
 
     var CHATGPT_BASE = 'https://chatgpt.com';
     var TIMEOUT = 360000;
+    var DEFAULT_MODEL = 'gpt-5-5-thinking';
 
     // ─── State ───────────────────────────────────────
     var _conversationId = null;
     var _parentMessageId = null;
     var _cachedToken = null;
     var _tokenExpiry = 0;
+    var _lastMeta = { requestedModel: DEFAULT_MODEL, actualModel: null, conversationId: null, parentMessageId: null };
 
     // ─── SHA3-512 (pure JS, required for POW challenges) ───
 
@@ -237,6 +239,18 @@
                     // Persist conversation context for follow-up messages
                     if (parsed.conversation_id) {
                         _conversationId = parsed.conversation_id;
+                        _lastMeta.conversationId = parsed.conversation_id;
+                    }
+
+                    var modelSlug = null;
+                    try {
+                        modelSlug = (parsed.message && parsed.message.metadata && (parsed.message.metadata.model_slug || parsed.message.metadata.default_model_slug))
+                            || parsed.model_slug
+                            || (parsed.metadata && parsed.metadata.model_slug)
+                            || null;
+                    } catch (e) {}
+                    if (modelSlug) {
+                        _lastMeta.actualModel = modelSlug;
                     }
 
                     var parts = parsed && parsed.message && parsed.message.content && parsed.message.content.parts;
@@ -245,6 +259,7 @@
 
                         if (parsed.message.id) {
                             _parentMessageId = parsed.message.id;
+                            _lastMeta.parentMessageId = parsed.message.id;
                         }
                     }
                 } catch(e) {}
@@ -283,6 +298,13 @@
         if (powData.requirementsToken) headers['Openai-Sentinel-Chat-Requirements-Token'] = powData.requirementsToken;
         if (powData.proofToken) headers['Openai-Sentinel-Proof-Token'] = powData.proofToken;
 
+        _lastMeta = {
+            requestedModel: DEFAULT_MODEL,
+            actualModel: null,
+            conversationId: _conversationId,
+            parentMessageId: _parentMessageId
+        };
+
         var payload = {
             action: 'next',
             messages: [{
@@ -291,7 +313,7 @@
                 content: { content_type: 'text', parts: [message] },
                 metadata: {}
             }],
-            model: 'auto',
+            model: DEFAULT_MODEL,
 
             parent_message_id: _parentMessageId || crypto.randomUUID(),
             timezone_offset_min: new Date().getTimezoneOffset(),
@@ -367,10 +389,20 @@
     function newConversation() {
         _conversationId = null;
         _parentMessageId = null;
+        _lastMeta = { requestedModel: DEFAULT_MODEL, actualModel: null, conversationId: null, parentMessageId: null };
         console.log('[Proxima ChatGPT] Conversation reset');
     }
 
-    window.__proximaChatGPT = { send: send, newConversation: newConversation };
+    function getLastMeta() {
+        return {
+            requestedModel: _lastMeta.requestedModel || DEFAULT_MODEL,
+            actualModel: _lastMeta.actualModel || null,
+            conversationId: _lastMeta.conversationId || _conversationId || null,
+            parentMessageId: _lastMeta.parentMessageId || _parentMessageId || null
+        };
+    }
+
+    window.__proximaChatGPT = { send: send, newConversation: newConversation, getLastMeta: getLastMeta };
     console.log('[Proxima] ChatGPT engine loaded');
     // Pre-warm auth token and page scripts to speed up first request
     _getToken().catch(function(){});

@@ -791,8 +791,10 @@ async function sendMessageToProvider(provider, message, forceDOM = false) {
         throw new Error(`Provider ${provider} not initialized`);
     }
 
-    // API-first approach — direct fetch + SSE, skip when forceDOM=true
-    if (!forceDOM) {
+    const preferDOMForProvider = false;
+
+    // API-first approach — direct fetch + SSE, skip when forceDOM=true or when provider needs UI state control
+    if (!forceDOM && !preferDOMForProvider) {
         try {
             console.log(`[${provider}] Trying API-first approach...`);
             const apiResponse = await providerAPI.sendViaAPI(provider, webContents, message);
@@ -814,6 +816,8 @@ async function sendMessageToProvider(provider, message, forceDOM = false) {
             // Clear stale cache so getResponseWithTyping doesn't return old data
             delete _apiResponseCache[provider];
         }
+    } else if (preferDOMForProvider && !forceDOM) {
+        console.log(`[${provider}] Skipping API-first so preferred UI model selection can be enforced before send`);
     } else {
         console.log(`[${provider}] forceDOM=true — skipping API, typing into open conversation`);
     }
@@ -949,7 +953,125 @@ async function sendToPerplexity(webContents, message) {
     return { sent: true, oldFingerprint: oldResponseData.fingerprint };
 }
 
+const CHATGPT_DEFAULT_MODEL_TESTID = 'model-switcher-gpt-5-5-thinking';
+const CHATGPT_DEFAULT_MODEL_LABEL = 'Thinking';
+
+async function ensureChatGPTPreferredModel(webContents) {
+    const desiredTestId = CHATGPT_DEFAULT_MODEL_TESTID;
+    const desiredLabel = CHATGPT_DEFAULT_MODEL_LABEL;
+
+    const result = await webContents.executeJavaScript(`
+        (async function() {
+            const desiredTestId = ${JSON.stringify(CHATGPT_DEFAULT_MODEL_TESTID)};
+            const desiredLabel = ${JSON.stringify(CHATGPT_DEFAULT_MODEL_LABEL)};
+            const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+            const getText = (el) => String((el && (el.innerText || el.textContent)) || '').replace(/\s+/g, ' ').trim();
+            const getModelButton = () => document.querySelector('[data-testid="model-switcher-dropdown-button"]') || document.querySelector('button[aria-label="Model selector"]');
+            const isVisible = (el) => {
+                if (!el) return false;
+                const rect = el.getBoundingClientRect();
+                const style = window.getComputedStyle(el);
+                return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+            };
+            const listOptions = () => Array.from(document.querySelectorAll('[role="menuitemradio"]')).map((el) => ({
+                testid: el.getAttribute('data-testid') || '',
+                text: getText(el),
+                checked: el.getAttribute('aria-checked') === 'true',
+                visible: isVisible(el)
+            }));
+            const isMenuOpen = () => Array.from(document.querySelectorAll('[role="menuitemradio"]')).some(isVisible);
+            const closeMenu = async () => {
+                if (!isMenuOpen()) return;
+                document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+                document.dispatchEvent(new KeyboardEvent('keyup', { key: 'Escape', bubbles: true }));
+                await sleep(180);
+                if (isMenuOpen()) {
+                    const btn = getModelButton();
+                    if (btn) btn.click();
+                    await sleep(180);
+                }
+            };
+            const findDesired = () => document.querySelector('[data-testid="' + desiredTestId + '"][role="menuitemradio"]');
+            const hasThinkingPill = () => {
+                return Array.from(document.querySelectorAll('button, div, span'))
+                    .some(el => {
+                        const text = getText(el);
+                        const cls = String(el.className || '');
+                        return text === desiredLabel && (cls.includes('__composer-pill') || cls.includes('composer-pill'));
+                    });
+            };
+
+            let button = getModelButton();
+            if (!button) {
+                return { ok: false, error: 'Model selector button not found', url: location.href };
+            }
+
+            let desired = findDesired();
+            if (!desired) {
+                button.click();
+                await sleep(350);
+                desired = findDesired();
+            }
+
+            if (!desired) {
+                return {
+                    ok: false,
+                    error: 'Preferred ChatGPT model not found in model menu',
+                    url: location.href,
+                    options: listOptions(),
+                    body: (document.body && document.body.innerText ? document.body.innerText.slice(0, 1200) : '')
+                };
+            }
+
+            if (desired.getAttribute('aria-checked') === 'true') {
+                await closeMenu();
+                return {
+                    ok: true,
+                    changed: false,
+                    verified: true,
+                    model: desiredTestId,
+                    label: desiredLabel,
+                    options: listOptions(),
+                    hasThinkingPill: hasThinkingPill()
+                };
+            }
+
+            desired.click();
+            await sleep(700);
+
+            button = getModelButton();
+            if (button && !findDesired()) {
+                button.click();
+                await sleep(350);
+            }
+
+            const desiredAfter = findDesired();
+            const verified = !!desiredAfter && desiredAfter.getAttribute('aria-checked') === 'true';
+            await closeMenu();
+
+            return {
+                ok: verified || hasThinkingPill(),
+                changed: true,
+                verified,
+                model: desiredTestId,
+                label: desiredLabel,
+                options: listOptions(),
+                hasThinkingPill: hasThinkingPill()
+            };
+        })()
+    `);
+
+    if (!result || !result.ok) {
+        throw new Error(result && result.error ? result.error : 'Failed to enforce preferred ChatGPT model');
+    }
+
+    console.log(`[ChatGPT] Preferred model ready: ${desiredLabel} (${desiredTestId}) changed=${!!result.changed} verified=${!!result.verified} pill=${!!result.hasThinkingPill}`);
+    return result;
+}
+
 async function sendToChatGPT(webContents, message) {
+    await ensureChatGPTPreferredModel(webContents);
+
     // IMPORTANT: Capture current response fingerprint BEFORE sending new message
     // This helps us detect when the NEW response appears
     const oldResponseFingerprint = await webContents.executeJavaScript(`
@@ -1027,7 +1149,7 @@ async function sendToChatGPT(webContents, message) {
         await webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Enter' });
     }
 
-    return { sent: true };
+    return { sent: true, model: CHATGPT_DEFAULT_MODEL_TESTID };
 }
 
 async function sendToClaude(webContents, message) {
