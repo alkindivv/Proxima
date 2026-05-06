@@ -167,6 +167,7 @@
         var sessionToken = _getSessionToken();
         var frontendUuid = _uuid();
         var requestedModelPreference = (options.modelPreference && String(options.modelPreference).trim()) || DEFAULT_MODEL_PREFERENCE;
+        var timeoutMs = (options && Number(options.timeoutMs) > 0) ? Number(options.timeoutMs) : TIMEOUT;
 
         _lastMeta = {
             requestedModelPreference: requestedModelPreference,
@@ -220,7 +221,7 @@
         });
 
         var controller = new AbortController();
-        var timeoutId = setTimeout(function () { controller.abort(); }, TIMEOUT);
+        var timeoutId = setTimeout(function () { controller.abort(); }, timeoutMs);
 
         var headers = {
             'Content-Type': 'application/json',

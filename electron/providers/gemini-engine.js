@@ -210,7 +210,9 @@
 
     // ─── Send Message ───────────────────────────────
 
-    async function send(message) {
+    async function send(message, options) {
+        options = options || {};
+        var timeoutMs = (options && Number(options.timeoutMs) > 0) ? Number(options.timeoutMs) : TIMEOUT;
         var tokens = await _getTokens();
         var reqId = Math.floor(900000 * Math.random()) + 100000;
 
@@ -237,7 +239,7 @@
         var url = '/_/BardChatUi/data/assistant.lamda.BardFrontendService/StreamGenerate?' + queryParams;
 
         var controller = new AbortController();
-        var timeoutId = setTimeout(function() { controller.abort(); }, TIMEOUT);
+        var timeoutId = setTimeout(function() { controller.abort(); }, timeoutMs);
 
         var res = await fetch(url, {
             method: 'POST',
@@ -269,7 +271,7 @@
 
             var retryUrl = '/_/BardChatUi/data/assistant.lamda.BardFrontendService/StreamGenerate?' + retryParams;
             var retryController = new AbortController();
-            var retryTimeoutId = setTimeout(function() { retryController.abort(); }, TIMEOUT);
+            var retryTimeoutId = setTimeout(function() { retryController.abort(); }, timeoutMs);
 
             res = await fetch(retryUrl, {
                 method: 'POST',

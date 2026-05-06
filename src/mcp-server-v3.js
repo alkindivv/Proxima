@@ -93,26 +93,26 @@ class IPCClient {
         }
     }
 
-    async send(action, provider = null, data = {}) {
+    async send(action, provider = null, data = {}, options = {}) {
         if (!this.connected) {
             await this.connect();
         }
 
         const requestId = ++this.requestId;
         const request = { requestId, action, provider, data };
+        const timeoutMs = Number(options.timeoutMs) > 0 ? Number(options.timeoutMs) : 120000;
 
         return new Promise((resolve, reject) => {
             this.pendingRequests.set(requestId, { resolve, reject });
 
             this.socket.write(JSON.stringify(request) + '\n');
 
-            // 2 min timeout for file uploads
             setTimeout(() => {
                 if (this.pendingRequests.has(requestId)) {
                     this.pendingRequests.delete(requestId);
                     reject(new Error('Request timeout'));
                 }
-            }, 120000);
+            }, timeoutMs);
         });
     }
 
@@ -263,6 +263,26 @@ function buildMessageWithFiles(message, files) {
     return message;
 }
 
+const FANOUT_PROVIDER_TIMEOUT_MS = 45000;
+
+function formatFanoutResult(label, result) {
+    const divider = '═'.repeat(60);
+    const elapsedSeconds = typeof result.elapsedMs === 'number' ? (result.elapsedMs / 1000).toFixed(1) : '0.0';
+    const metaParts = [];
+    if (result.status) metaParts.push(`status=${result.status}`);
+    metaParts.push(`elapsed=${elapsedSeconds}s`);
+    if (result.source) metaParts.push(`source=${result.source}`);
+    if (result.cached) metaParts.push('cached=yes');
+    const metaLine = metaParts.length ? `\n(${metaParts.join(', ')})` : '';
+
+    if (result.status !== 'ok') {
+        const message = result.error || result.text || 'No response received';
+        return `\n${divider}\n## ${label} Response\n${divider}\n\n❌ ${message}${metaLine}\n`;
+    }
+
+    return `\n${divider}\n## ${label} Response\n${divider}\n\n${result.text}${metaLine}\n`;
+}
+
 // ─── AI Providers (IPC-backed) ─────────────────────
 
 class AIProvider {
@@ -305,29 +325,103 @@ class AIProvider {
         if (!isProviderEnabled(this.name)) {
             throw new Error(`${this.name} is disabled. Enable it in Proxima Agent Hub settings.`);
         }
-        await this.ipc.send('initProvider', this.name);
+        this._unwrapIPCResult(await this.ipc.send('initProvider', this.name), 'initProvider');
+    }
+
+    _unwrapIPCResult(result, action) {
+        if (!result || result.success === false) {
+            const errMsg = result && result.error ? result.error : `Unknown IPC error during ${action}`;
+            throw new Error(errMsg);
+        }
+        return result;
+    }
+
+    _classifyOutcome(text, error, meta = {}) {
+        const elapsedMs = meta.elapsedMs || 0;
+        const timeoutMs = meta.timeoutMs || null;
+        const normalizedText = typeof text === 'string' ? text.trim() : '';
+        const errorMessage = error ? String(error.message || error).trim() : '';
+        const lowerError = errorMessage.toLowerCase();
+        const lowerText = normalizedText.toLowerCase();
+
+        if (errorMessage) {
+            let status = 'error';
+            if (lowerError.includes('timeout') || lowerError.includes('timed out')) {
+                status = 'timeout';
+            } else if (lowerError.includes('not logged in') || lowerError.includes('auth') || lowerError.includes('login')) {
+                status = 'auth_required';
+            }
+
+            return {
+                provider: this.name,
+                status,
+                text: '',
+                error: errorMessage,
+                elapsedMs,
+                timeoutMs,
+                source: meta.source || null,
+                cached: !!meta.cached,
+                phase: meta.phase || null
+            };
+        }
+
+        let status = 'ok';
+        let finalText = normalizedText;
+        if (!finalText) {
+            status = 'empty';
+        } else if (lowerText === 'no response captured' || lowerText === 'no response received') {
+            status = 'capture_failed';
+            finalText = '';
+        }
+
+        return {
+            provider: this.name,
+            status,
+            text: finalText,
+            error: null,
+            elapsedMs,
+            timeoutMs,
+            source: meta.source || null,
+            cached: !!meta.cached,
+            phase: meta.phase || null
+        };
+    }
+
+    _remainingMs(deadlineAt) {
+        if (!deadlineAt) return null;
+        return Math.max(0, deadlineAt - Date.now());
+    }
+
+    _requireRemaining(deadlineAt, phase) {
+        const remaining = this._remainingMs(deadlineAt);
+        if (remaining !== null && remaining <= 0) {
+            throw new Error(`Timeout during ${phase}`);
+        }
+        return remaining;
     }
 
     async isLoggedIn() {
-        const result = await this.ipc.send('isLoggedIn', this.name);
+        const result = this._unwrapIPCResult(await this.ipc.send('isLoggedIn', this.name), 'isLoggedIn');
         return result.loggedIn;
     }
 
     async getTypingStatus() {
-        const result = await this.ipc.send('getTypingStatus', this.name);
+        const result = this._unwrapIPCResult(await this.ipc.send('getTypingStatus', this.name), 'getTypingStatus');
         return result;
     }
 
-    // Execute the actual chat request — called inside the queue
-    async _doChat(message) {
+    async _doChatDetailed(message, options = {}) {
+        const start = Date.now();
+        const timeoutMs = Number(options.timeoutMs) > 0 ? Number(options.timeoutMs) : 120000;
+        const deadlineAt = Date.now() + timeoutMs;
+
         await this.ensureInitialized();
 
-        // DESYNC FIX: Wait for any ongoing typing to stop before sending new message
-        // But don't wait too long - max 5 seconds
         console.error(`[${this.name}] Checking if AI is still typing from previous request...`);
         let typingCheck = await this.getTypingStatus();
         let waitCount = 0;
         while (typingCheck.isTyping && waitCount < 5) {
+            this._requireRemaining(deadlineAt, 'pre-send typing drain');
             console.error(`[${this.name}] AI still typing, waiting...`);
             await this.sleep(1000);
             typingCheck = await this.getTypingStatus();
@@ -335,29 +429,77 @@ class AIProvider {
         }
 
         console.error(`[${this.name}] Sending message...`);
-        await this.ipc.send('sendMessage', this.name, { message });
+        const sendBudgetMs = this._requireRemaining(deadlineAt, 'sendMessage');
+        const sendResult = this._unwrapIPCResult(
+            await this.ipc.send('sendMessage', this.name, { message, timeoutMs: sendBudgetMs }, { timeoutMs: Math.max(sendBudgetMs + 2000, 1000) }),
+            'sendMessage'
+        );
+
+        const directResponse = sendResult && sendResult.result && typeof sendResult.result.response === 'string'
+            ? sendResult.result.response.trim()
+            : '';
+        if (directResponse) {
+            return this._classifyOutcome(directResponse, null, {
+                elapsedMs: Date.now() - start,
+                timeoutMs,
+                source: 'api',
+                phase: 'send'
+            });
+        }
 
         console.error(`[${this.name}] Waiting for response (with typing detection)...`);
-        const result = await this.ipc.send('getResponseWithTyping', this.name, {});
+        const responseBudgetMs = this._requireRemaining(deadlineAt, 'response capture');
+        const result = this._unwrapIPCResult(
+            await this.ipc.send('getResponseWithTyping', this.name, { timeoutMs: responseBudgetMs }, { timeoutMs: Math.max(responseBudgetMs + 2000, 1000) }),
+            'getResponseWithTyping'
+        );
 
         if (result.typingStarted) {
             console.error(`[${this.name}] Typing detected and completed`);
         }
 
-        return result.response || 'No response received';
+        if (result.timedOut) {
+            return this._classifyOutcome('', new Error(result.error || 'Timeout during response capture'), {
+                elapsedMs: Date.now() - start,
+                timeoutMs,
+                source: result.source || 'dom',
+                phase: result.phase || 'response_capture'
+            });
+        }
+
+        return this._classifyOutcome(result.response || 'No response received', null, {
+            elapsedMs: Date.now() - start,
+            timeoutMs,
+            source: result.source || 'dom',
+            phase: result.phase || 'response_capture'
+        });
     }
 
-    async chat(message, useCache = true) {
-        // Cache check runs OUTSIDE queue — instant return, no waiting
+    async _doChat(message, options = {}) {
+        const detailed = await this._doChatDetailed(message, options);
+        if (detailed.status === 'timeout') {
+            throw new Error(detailed.error || 'Request timeout');
+        }
+        return detailed.text || 'No response received';
+    }
+
+    async chatDetailed(message, options = {}) {
+        const useCache = options.useCache !== false;
+
         if (useCache && this.cache.has(message)) {
             const cached = this.cache.get(message);
             if (Date.now() - cached.time < this.cacheTimeout) {
                 console.error(`[${this.name}] Using cached response`);
-                return cached.response;
+                return this._classifyOutcome(cached.response, null, {
+                    elapsedMs: 0,
+                    timeoutMs: options.timeoutMs || null,
+                    source: 'cache',
+                    cached: true,
+                    phase: 'cache'
+                });
             }
         }
 
-        // Queue the request — waits for previous request to finish (success or fail)
         this._queueLength++;
         const position = this._queueLength;
         if (position > 1) {
@@ -366,8 +508,10 @@ class AIProvider {
 
         const responsePromise = this._queue.then(async () => {
             console.error(`[${this.name}] Processing request (${position} of ${this._queueLength})...`);
-            const response = await this._doChat(message);
-            this.cache.set(message, { response, time: Date.now() });
+            const response = await this._doChatDetailed(message, options);
+            if (response.status === 'ok' && response.text) {
+                this.cache.set(message, { response: response.text, time: Date.now() });
+            }
             this._queueLength--;
             return response;
         }).catch((err) => {
@@ -375,16 +519,25 @@ class AIProvider {
             throw err;
         });
 
-        // Chain: next request waits for this one to settle (success OR fail)
         this._queue = responsePromise.catch(() => {});
 
         return responsePromise;
     }
 
-
+    async chat(message, useCache = true) {
+        const detailed = await this.chatDetailed(message, { useCache });
+        if (detailed.status === 'timeout' || detailed.status === 'error' || detailed.status === 'auth_required') {
+            throw new Error(detailed.error || `${this.name} ${detailed.status}`);
+        }
+        return detailed.text || 'No response received';
+    }
 
     async search(query, useCache = true) {
         return await this.chat(query, useCache);
+    }
+
+    async searchDetailed(query, options = {}) {
+        return await this.chatDetailed(query, options);
     }
 
     async executeScript(script) {
@@ -1240,175 +1393,46 @@ server.tool(
 
             console.error('[ask_all_ais] Sending to all providers with staggered start (prevents UI freeze)...');
 
-            // Helper: staggered delay to prevent Electron main process overload
-            // Each provider starts 2s apart but all run concurrently via Promise.all
             const STAGGER_MS = 2000;
             let providerIndex = 0;
             const staggerDelay = (ms) => new Promise(r => setTimeout(r, ms));
 
-            // Build staggered parallel tasks
-            if (enabled.has('perplexity')) {
+            const enqueue = (name, fn) => {
                 const delay = providerIndex++ * STAGGER_MS;
-                names.push('perplexity');
-                tasks.push(
-                    (async () => {
-                        if (delay > 0) await staggerDelay(delay);
-                        try {
-                            return await perplexity.search(fullMessage);
-                        } catch (e) {
-                            return { error: e.message };
-                        }
-                    })()
-                );
-            }
-            if (enabled.has('chatgpt')) {
-                const delay = providerIndex++ * STAGGER_MS;
-                names.push('chatgpt');
-                tasks.push(
-                    (async () => {
-                        if (delay > 0) await staggerDelay(delay);
-                        try {
-                            return await chatgpt.chat(fullMessage);
-                        } catch (e) {
-                            return { error: e.message };
-                        }
-                    })()
-                );
-            }
-            if (enabled.has('claude')) {
-                const delay = providerIndex++ * STAGGER_MS;
-                names.push('claude');
-                tasks.push(
-                    (async () => {
-                        if (delay > 0) await staggerDelay(delay);
-                        try {
-                            return await claude.chat(fullMessage);
-                        } catch (e) {
-                            return { error: e.message };
-                        }
-                    })()
-                );
-            }
-            if (enabled.has('gemini')) {
-                const delay = providerIndex++ * STAGGER_MS;
-                names.push('gemini');
-                tasks.push(
-                    (async () => {
-                        if (delay > 0) await staggerDelay(delay);
-                        try {
-                            return await gemini.chat(fullMessage);
-                        } catch (e) {
-                            return { error: e.message };
-                        }
-                    })()
-                );
-            }
-            if (enabled.has('kimi')) {
-                const delay = providerIndex++ * STAGGER_MS;
-                names.push('kimi');
-                tasks.push(
-                    (async () => {
-                        if (delay > 0) await staggerDelay(delay);
-                        try {
-                            return await kimi.chat(fullMessage);
-                        } catch (e) {
-                            return { error: e.message };
-                        }
-                    })()
-                );
-            }
-            if (enabled.has('minimax')) {
-                const delay = providerIndex++ * STAGGER_MS;
-                names.push('minimax');
-                tasks.push(
-                    (async () => {
-                        if (delay > 0) await staggerDelay(delay);
-                        try {
-                            return await minimax.chat(fullMessage);
-                        } catch (e) {
-                            return { error: e.message };
-                        }
-                    })()
-                );
-            }
-            if (enabled.has('mimo')) {
-                const delay = providerIndex++ * STAGGER_MS;
-                names.push('mimo');
-                tasks.push(
-                    (async () => {
-                        if (delay > 0) await staggerDelay(delay);
-                        try {
-                            return await mimo.chat(fullMessage);
-                        } catch (e) {
-                            return { error: e.message };
-                        }
-                    })()
-                );
-            }
-            if (enabled.has('qwen')) {
-                const delay = providerIndex++ * STAGGER_MS;
-                names.push('qwen');
-                tasks.push(
-                    (async () => {
-                        if (delay > 0) await staggerDelay(delay);
-                        try {
-                            return await qwen.chat(fullMessage);
-                        } catch (e) {
-                            return { error: e.message };
-                        }
-                    })()
-                );
-            }
-            if (enabled.has('zai')) {
-                const delay = providerIndex++ * STAGGER_MS;
-                names.push('zai');
-                tasks.push(
-                    (async () => {
-                        if (delay > 0) await staggerDelay(delay);
-                        try {
-                            return await zai.chat(fullMessage);
-                        } catch (e) {
-                            return { error: e.message };
-                        }
-                    })()
-                );
-            }
-            if (enabled.has('deepseek')) {
-                const delay = providerIndex++ * STAGGER_MS;
-                names.push('deepseek');
-                tasks.push(
-                    (async () => {
-                        if (delay > 0) await staggerDelay(delay);
-                        try {
-                            return await deepseek.chat(fullMessage);
-                        } catch (e) {
-                            return { error: e.message };
-                        }
-                    })()
-                );
-            }
+                names.push(name);
+                tasks.push((async () => {
+                    if (delay > 0) await staggerDelay(delay);
+                    try {
+                        return await fn();
+                    } catch (e) {
+                        return { provider: name, status: 'error', error: e.message, text: '', elapsedMs: FANOUT_PROVIDER_TIMEOUT_MS, source: null, cached: false };
+                    }
+                })());
+            };
 
-            // Wait for ALL to complete - typing detection is handled inside chat()
+            if (enabled.has('perplexity')) enqueue('perplexity', () => perplexity.searchDetailed(fullMessage, { timeoutMs: FANOUT_PROVIDER_TIMEOUT_MS }));
+            if (enabled.has('chatgpt')) enqueue('chatgpt', () => chatgpt.chatDetailed(fullMessage, { timeoutMs: FANOUT_PROVIDER_TIMEOUT_MS }));
+            if (enabled.has('claude')) enqueue('claude', () => claude.chatDetailed(fullMessage, { timeoutMs: FANOUT_PROVIDER_TIMEOUT_MS }));
+            if (enabled.has('gemini')) enqueue('gemini', () => gemini.chatDetailed(fullMessage, { timeoutMs: FANOUT_PROVIDER_TIMEOUT_MS }));
+            if (enabled.has('kimi')) enqueue('kimi', () => kimi.chatDetailed(fullMessage, { timeoutMs: FANOUT_PROVIDER_TIMEOUT_MS }));
+            if (enabled.has('minimax')) enqueue('minimax', () => minimax.chatDetailed(fullMessage, { timeoutMs: FANOUT_PROVIDER_TIMEOUT_MS }));
+            if (enabled.has('mimo')) enqueue('mimo', () => mimo.chatDetailed(fullMessage, { timeoutMs: FANOUT_PROVIDER_TIMEOUT_MS }));
+            if (enabled.has('qwen')) enqueue('qwen', () => qwen.chatDetailed(fullMessage, { timeoutMs: FANOUT_PROVIDER_TIMEOUT_MS }));
+            if (enabled.has('zai')) enqueue('zai', () => zai.chatDetailed(fullMessage, { timeoutMs: FANOUT_PROVIDER_TIMEOUT_MS }));
+            if (enabled.has('deepseek')) enqueue('deepseek', () => deepseek.chatDetailed(fullMessage, { timeoutMs: FANOUT_PROVIDER_TIMEOUT_MS }));
+
             console.error('[ask_all_ais] Waiting for all providers to complete...');
             const results = await Promise.all(tasks);
             console.error('[ask_all_ais] All providers completed');
 
-            // Format as clearly separated text so it's readable even in output.txt
             const sections = [];
             names.forEach((name, i) => {
-                const response = results[i];
                 const label = name.charAt(0).toUpperCase() + name.slice(1);
-                const divider = '═'.repeat(60);
-                if (response && response.error) {
-                    sections.push(`\n${divider}\n## ${label} Response\n${divider}\n\n❌ Error: ${response.error}\n`);
-                } else {
-                    const text = typeof response === 'string' ? response : (response?.response || response?.text || JSON.stringify(response));
-                    sections.push(`\n${divider}\n## ${label} Response\n${divider}\n\n${text}\n`);
-                }
+                const response = results[i] || { provider: name, status: 'empty', text: '', error: 'No response received', elapsedMs: 0, source: null, cached: false };
+                sections.push(formatFanoutResult(label, response));
             });
 
             const formattedOutput = `# Ask All AIs — ${names.length} Providers\n` + sections.join('\n');
-
             return toolResponse(formattedOutput);
         } catch (err) {
             return toolError(err);
@@ -1436,31 +1460,39 @@ server.tool(
             const STAGGER_MS = 2000;
             let idx = 0;
 
-            if (useProviders.includes('perplexity')) { const d = idx++ * STAGGER_MS; tasks.push((async () => { if (d > 0) await staggerDelay(d); try { results.perplexity = await perplexity.search(fullQuestion); } catch(e) { results.perplexity = { error: e.message }; } })()); }
-            if (useProviders.includes('chatgpt')) { const d = idx++ * STAGGER_MS; tasks.push((async () => { if (d > 0) await staggerDelay(d); try { results.chatgpt = await chatgpt.chat(fullQuestion); } catch(e) { results.chatgpt = { error: e.message }; } })()); }
-            if (useProviders.includes('claude')) { const d = idx++ * STAGGER_MS; tasks.push((async () => { if (d > 0) await staggerDelay(d); try { results.claude = await claude.chat(fullQuestion); } catch(e) { results.claude = { error: e.message }; } })()); }
-            if (useProviders.includes('gemini')) { const d = idx++ * STAGGER_MS; tasks.push((async () => { if (d > 0) await staggerDelay(d); try { results.gemini = await gemini.chat(fullQuestion); } catch(e) { results.gemini = { error: e.message }; } })()); }
-            if (useProviders.includes('kimi')) { const d = idx++ * STAGGER_MS; tasks.push((async () => { if (d > 0) await staggerDelay(d); try { results.kimi = await kimi.chat(fullQuestion); } catch(e) { results.kimi = { error: e.message }; } })()); }
-            if (useProviders.includes('minimax')) { const d = idx++ * STAGGER_MS; tasks.push((async () => { if (d > 0) await staggerDelay(d); try { results.minimax = await minimax.chat(fullQuestion); } catch(e) { results.minimax = { error: e.message }; } })()); }
-            if (useProviders.includes('mimo')) { const d = idx++ * STAGGER_MS; tasks.push((async () => { if (d > 0) await staggerDelay(d); try { results.mimo = await mimo.chat(fullQuestion); } catch(e) { results.mimo = { error: e.message }; } })()); }
+            const enqueue = (name, fn) => {
+                const d = idx++ * STAGGER_MS;
+                tasks.push((async () => {
+                    if (d > 0) await staggerDelay(d);
+                    try {
+                        results[name] = await fn();
+                    } catch (e) {
+                        results[name] = { provider: name, status: 'error', error: e.message, text: '', elapsedMs: FANOUT_PROVIDER_TIMEOUT_MS, source: null, cached: false };
+                    }
+                })());
+            };
+
+            if (useProviders.includes('perplexity')) enqueue('perplexity', () => perplexity.searchDetailed(fullQuestion, { timeoutMs: FANOUT_PROVIDER_TIMEOUT_MS }));
+            if (useProviders.includes('chatgpt')) enqueue('chatgpt', () => chatgpt.chatDetailed(fullQuestion, { timeoutMs: FANOUT_PROVIDER_TIMEOUT_MS }));
+            if (useProviders.includes('claude')) enqueue('claude', () => claude.chatDetailed(fullQuestion, { timeoutMs: FANOUT_PROVIDER_TIMEOUT_MS }));
+            if (useProviders.includes('gemini')) enqueue('gemini', () => gemini.chatDetailed(fullQuestion, { timeoutMs: FANOUT_PROVIDER_TIMEOUT_MS }));
+            if (useProviders.includes('kimi')) enqueue('kimi', () => kimi.chatDetailed(fullQuestion, { timeoutMs: FANOUT_PROVIDER_TIMEOUT_MS }));
+            if (useProviders.includes('minimax')) enqueue('minimax', () => minimax.chatDetailed(fullQuestion, { timeoutMs: FANOUT_PROVIDER_TIMEOUT_MS }));
+            if (useProviders.includes('mimo')) enqueue('mimo', () => mimo.chatDetailed(fullQuestion, { timeoutMs: FANOUT_PROVIDER_TIMEOUT_MS }));
+            if (useProviders.includes('qwen')) enqueue('qwen', () => qwen.chatDetailed(fullQuestion, { timeoutMs: FANOUT_PROVIDER_TIMEOUT_MS }));
+            if (useProviders.includes('zai')) enqueue('zai', () => zai.chatDetailed(fullQuestion, { timeoutMs: FANOUT_PROVIDER_TIMEOUT_MS }));
+            if (useProviders.includes('deepseek')) enqueue('deepseek', () => deepseek.chatDetailed(fullQuestion, { timeoutMs: FANOUT_PROVIDER_TIMEOUT_MS }));
 
             await Promise.all(tasks);
 
-            // Format as clearly separated text
             const sections = [];
-            for (const [name, response] of Object.entries(results)) {
+            for (const name of useProviders) {
+                const response = results[name] || { provider: name, status: 'empty', text: '', error: 'No response received', elapsedMs: 0, source: null, cached: false };
                 const label = name.charAt(0).toUpperCase() + name.slice(1);
-                const divider = '═'.repeat(60);
-                if (response && response.error) {
-                    sections.push(`\n${divider}\n## ${label} Response\n${divider}\n\n❌ Error: ${response.error}\n`);
-                } else {
-                    const text = typeof response === 'string' ? response : (response?.response || response?.text || JSON.stringify(response));
-                    sections.push(`\n${divider}\n## ${label} Response\n${divider}\n\n${text}\n`);
-                }
+                sections.push(formatFanoutResult(label, response));
             }
 
             const formattedOutput = `# AI Comparison — ${useProviders.length} Providers\nQuestion: ${question}\n` + sections.join('\n');
-
             return toolResponse(formattedOutput);
         } catch (err) {
             return toolError(err);

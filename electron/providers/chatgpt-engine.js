@@ -275,6 +275,7 @@
     async function send(message, options) {
         options = options || {};
         var requestedModel = (options.model && String(options.model).trim()) || DEFAULT_MODEL;
+        var timeoutMs = (options && Number(options.timeoutMs) > 0) ? Number(options.timeoutMs) : TIMEOUT;
         var token = await _getToken();
 
         // OAI-Device-Id header required for API auth
@@ -336,7 +337,7 @@
         }
 
         var controller = new AbortController();
-        var timeoutId = setTimeout(function() { controller.abort(); }, TIMEOUT);
+        var timeoutId = setTimeout(function() { controller.abort(); }, timeoutMs);
 
         var res = await fetch('/backend-api/conversation', {
             method: 'POST',
@@ -351,7 +352,7 @@
             var newToken = await _getToken();
             headers['Authorization'] = 'Bearer ' + newToken;
             var retryController = new AbortController();
-            var retryTimeoutId = setTimeout(function() { retryController.abort(); }, TIMEOUT);
+            var retryTimeoutId = setTimeout(function() { retryController.abort(); }, timeoutMs);
             res = await fetch('/backend-api/conversation', {
                 method: 'POST',
                 credentials: 'include',

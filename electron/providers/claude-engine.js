@@ -28,7 +28,9 @@
     }
 
     // ─── Conversation ────────────────────────────────
-    async function _createConversation(orgId, promptPreview) {
+    async function _createConversation(orgId, promptPreview, timeoutMs) {
+        var controller = new AbortController();
+        var createTimeoutId = setTimeout(function() { controller.abort(); }, timeoutMs || TIMEOUT);
         const res = await fetch('/api/organizations/' + orgId + '/chat_conversations', {
             method: 'POST',
             credentials: 'include',
@@ -37,8 +39,10 @@
                 name: (promptPreview || 'proxima').substring(0, 50).replace(/\n/g, ' ').trim(),
                 project_uuid: null,
                 is_starred: false
-            })
+            }),
+            signal: controller.signal
         });
+        clearTimeout(createTimeoutId);
         if (!res.ok) {
             if (res.status === 401 || res.status === 403) {
                 _orgId = null;
@@ -89,12 +93,14 @@
     }
 
     // ─── Send Message ───────────────────────────────
-    async function send(message) {
+    async function send(message, options) {
+        options = options || {};
+        var timeoutMs = (options && Number(options.timeoutMs) > 0) ? Number(options.timeoutMs) : TIMEOUT;
         var orgId = await _getOrgId();
 
         // Reuse existing conversation or create new one
         if (!_convId) {
-            _convId = await _createConversation(orgId, message);
+            _convId = await _createConversation(orgId, message, timeoutMs);
             console.log('[Proxima Claude] Created new conversation:', _convId);
         } else {
             console.log('[Proxima Claude] Continuing conversation:', _convId);
@@ -102,7 +108,7 @@
 
         try {
             var controller = new AbortController();
-            var timeoutId = setTimeout(function() { controller.abort(); }, TIMEOUT);
+            var timeoutId = setTimeout(function() { controller.abort(); }, timeoutMs);
 
             var res = await fetch('/api/organizations/' + orgId + '/chat_conversations/' + _convId + '/completion', {
                 method: 'POST',
@@ -127,10 +133,10 @@
                 // Conversation expired or deleted — create new and retry
                 if (res.status === 404 || res.status === 410) {
                     console.log('[Proxima Claude] Conversation expired, creating new one...');
-                    _convId = await _createConversation(orgId, message);
+                    _convId = await _createConversation(orgId, message, timeoutMs);
 
                     var retryController = new AbortController();
-                    var retryTimeoutId = setTimeout(function() { retryController.abort(); }, TIMEOUT);
+                    var retryTimeoutId = setTimeout(function() { retryController.abort(); }, timeoutMs);
 
                     res = await fetch('/api/organizations/' + orgId + '/chat_conversations/' + _convId + '/completion', {
                         method: 'POST',

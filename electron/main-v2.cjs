@@ -537,16 +537,16 @@ async function handleMCPRequest(request) {
 
                         const uploadResult = await uploadFileToProvider(provider, data.filePath);
                         await sleep(1000); // Wait for file to attach
-                        const result = await sendMessageToProvider(provider, data.message, data.forceDOM || false);
+                        const result = await sendMessageToProvider(provider, data.message, data.forceDOM || false, { timeoutMs: data.timeoutMs });
                         return { success: true, provider, result, fileUploaded: uploadResult };
                     } catch (fileErr) {
                         console.error('[MCP] File upload failed:', fileErr.message);
                         // Still send message even if file upload fails
-                        const result = await sendMessageToProvider(provider, data.message, data.forceDOM || false);
+                        const result = await sendMessageToProvider(provider, data.message, data.forceDOM || false, { timeoutMs: data.timeoutMs });
                         return { success: true, provider, result, fileError: fileErr.message };
                     }
                 } else {
-                    const result = await sendMessageToProvider(provider, data.message, data.forceDOM || false);
+                    const result = await sendMessageToProvider(provider, data.message, data.forceDOM || false, { timeoutMs: data.timeoutMs });
                     return { success: true, provider, result };
                 }
 
@@ -606,13 +606,13 @@ async function handleMCPRequest(request) {
                     }
 
 
-                    const msgResult = await sendMessageToProvider(provider, data.message);
+                    const msgResult = await sendMessageToProvider(provider, data.message, false, { timeoutMs: data.timeoutMs });
                     // Use engine response if available, only DOM-poll when engine didn't return content
                     let finalResponse = '';
                     if (msgResult && msgResult.response && msgResult.response.length > 0) {
                         finalResponse = msgResult.response;
                     } else {
-                        const responseData = await getResponseWithTypingStatus(provider);
+                        const responseData = await getResponseWithTypingStatus(provider, { timeoutMs: data.timeoutMs });
                         finalResponse = responseData.response;
                     }
                     return {
@@ -638,13 +638,17 @@ async function handleMCPRequest(request) {
             case 'getResponseWithTyping':
             case 'get-response-with-typing':
                 // Smart response capture - waits for typing to start and stop
-                const smartResponse = await getResponseWithTypingStatus(provider);
+                const smartResponse = await getResponseWithTypingStatus(provider, { timeoutMs: data.timeoutMs });
                 return {
                     success: true,
                     provider,
                     typingStarted: smartResponse.typingStarted,
                     typingStopped: smartResponse.typingStopped,
-                    response: smartResponse.response
+                    response: smartResponse.response,
+                    timedOut: !!smartResponse.timedOut,
+                    source: smartResponse.source || null,
+                    phase: smartResponse.phase || null,
+                    error: smartResponse.error || null
                 };
 
             case 'waitForSendButton':
@@ -786,25 +790,57 @@ async function handleMCPRequest(request) {
 // Provider-Specific Interaction Functions
 
 const PERPLEXITY_PREFERRED_MODEL = 'claude46sonnetthinking';
+const PROXIMA_BUDGET_TIMEOUT = '__PROXIMA_BUDGET_TIMEOUT__';
 
-async function sendMessageToProvider(provider, message, forceDOM = false) {
+function createDeadlineAt(options = {}) {
+    if (options && Number(options.deadlineAt) > Date.now()) {
+        return Number(options.deadlineAt);
+    }
+    if (options && Number(options.timeoutMs) > 0) {
+        return Date.now() + Number(options.timeoutMs);
+    }
+    return null;
+}
+
+function getRemainingBudgetMs(deadlineAt) {
+    if (!deadlineAt) return null;
+    return Math.max(0, deadlineAt - Date.now());
+}
+
+function hasBudgetRemaining(deadlineAt, minimumMs = 1) {
+    const remaining = getRemainingBudgetMs(deadlineAt);
+    return remaining === null || remaining >= minimumMs;
+}
+
+async function sleepWithBudget(ms, deadlineAt) {
+    const remaining = getRemainingBudgetMs(deadlineAt);
+    if (remaining !== null && remaining <= 0) return false;
+    await sleep(remaining === null ? ms : Math.min(ms, remaining));
+    return hasBudgetRemaining(deadlineAt, 1);
+}
+
+async function sendMessageToProvider(provider, message, forceDOM = false, options = {}) {
     const webContents = browserManager.getWebContents(provider);
     if (!webContents) {
         throw new Error(`Provider ${provider} not initialized`);
     }
 
+    const deadlineAt = createDeadlineAt(options);
     const preferDOMForProvider = false;
 
-    // API-first approach — direct fetch + SSE, skip when forceDOM=true or when provider needs UI state control
     if (!forceDOM && !preferDOMForProvider) {
         try {
             console.log(`[${provider}] Trying API-first approach...`);
             if (provider === 'gemini') {
                 await ensureGeminiPreferredMode(webContents);
             }
+            const remainingMs = getRemainingBudgetMs(deadlineAt);
+            if (remainingMs !== null && remainingMs <= 0) {
+                throw new Error(`Timeout during sendMessage(${provider})`);
+            }
             const apiOptions = provider === 'perplexity'
-                ? { modelPreference: PERPLEXITY_PREFERRED_MODEL }
-                : {};
+                ? { modelPreference: PERPLEXITY_PREFERRED_MODEL, timeoutMs: remainingMs }
+                : { timeoutMs: remainingMs };
             const apiResponse = await providerAPI.sendViaAPI(provider, webContents, message, apiOptions);
             if (apiResponse && apiResponse.length > 0) {
                 const looksLikeGeminiConversationId = provider === 'gemini' && /^c_[a-f0-9]+$/i.test((apiResponse || '').trim());
@@ -812,16 +848,15 @@ async function sendMessageToProvider(provider, message, forceDOM = false) {
                     console.log(`[${provider}] API returned conversation id (${apiResponse}) — falling back to DOM send`);
                     delete _apiResponseCache[provider];
                 } else {
-                    console.log(`[${provider}] \u2714 API response captured (${apiResponse.length} chars)`);
+                    console.log(`[${provider}] ✔ API response captured (${apiResponse.length} chars)`);
                     _apiResponseCache[provider] = apiResponse;
-                    return { response: apiResponse };
+                    return { response: apiResponse, source: 'api' };
                 }
             }
-            console.log(`[${provider}] API returned empty \u2014 falling back to DOM`);
+            console.log(`[${provider}] API returned empty — falling back to DOM`);
             delete _apiResponseCache[provider];
         } catch (apiErr) {
             console.log(`[${provider}] API failed: ${apiErr.message} — falling back to DOM`);
-            // Clear stale cache so getResponseWithTyping doesn't return old data
             delete _apiResponseCache[provider];
         }
     } else if (preferDOMForProvider && !forceDOM) {
@@ -830,27 +865,40 @@ async function sendMessageToProvider(provider, message, forceDOM = false) {
         console.log(`[${provider}] forceDOM=true — skipping API, typing into open conversation`);
     }
 
-    // DOM fallback: types into currently open conversation
+    if (!hasBudgetRemaining(deadlineAt, 250)) {
+        throw new Error(`Timeout during sendMessage(${provider})`);
+    }
 
+    let domResult;
     switch (provider) {
         case 'perplexity':
-            return await sendToPerplexity(webContents, message);
+            domResult = await sendToPerplexity(webContents, message);
+            break;
         case 'chatgpt':
-            return await sendToChatGPT(webContents, message);
+            domResult = await sendToChatGPT(webContents, message);
+            break;
         case 'claude':
-            return await sendToClaude(webContents, message);
+            domResult = await sendToClaude(webContents, message);
+            break;
         case 'gemini':
-            return await sendToGemini(webContents, message);
+            domResult = await sendToGemini(webContents, message);
+            break;
         case 'kimi':
         case 'minimax':
         case 'mimo':
         case 'qwen':
         case 'zai':
         case 'deepseek':
-            return await sendToModernProvider(webContents, provider, message);
+            domResult = await sendToModernProvider(webContents, provider, message);
+            break;
         default:
             throw new Error(`Unknown provider: ${provider}`);
     }
+
+    if (domResult && typeof domResult === 'object') {
+        return { ...domResult, source: 'dom' };
+    }
+    return { response: domResult || '', source: 'dom' };
 }
 
 async function sendToPerplexity(webContents, message) {
@@ -2441,10 +2489,10 @@ async function typeIntoPage(webContents, text) {
     await sleep(100);
 }
 
-async function getResponseWithTypingStatus(provider) {
+async function getResponseWithTypingStatus(provider, options = {}) {
     console.log(`[getResponseWithTyping] Starting for ${provider}...`);
+    const deadlineAt = createDeadlineAt(options);
 
-    // CHECK API CACHE FIRST — if API already captured the response, skip DOM scraping entirely
     if (_apiResponseCache[provider]) {
         const cached = _apiResponseCache[provider];
         const looksLikeGeminiConversationId = provider === 'gemini' && /^c_[a-f0-9]+$/i.test((cached || '').trim());
@@ -2452,12 +2500,15 @@ async function getResponseWithTypingStatus(provider) {
             console.log(`[getResponseWithTyping] Ignoring invalid Gemini API cache value: ${cached}`);
             delete _apiResponseCache[provider];
         } else {
-            delete _apiResponseCache[provider]; // Clear after use
-            console.log(`[getResponseWithTyping] \u2714 Using API-cached response for ${provider} (${cached.length} chars) — DOM scraping SKIPPED`);
+            delete _apiResponseCache[provider];
+            console.log(`[getResponseWithTyping] ✔ Using API-cached response for ${provider} (${cached.length} chars) — DOM scraping SKIPPED`);
             return {
                 typingStarted: true,
                 typingStopped: true,
-                response: cached
+                response: cached,
+                timedOut: false,
+                source: 'api',
+                phase: 'api_cache'
             };
         }
     }
@@ -2465,6 +2516,18 @@ async function getResponseWithTypingStatus(provider) {
     const webContents = browserManager.getWebContents(provider);
     if (!webContents) {
         throw new Error(`Provider ${provider} not initialized`);
+    }
+
+    if (!hasBudgetRemaining(deadlineAt, 50)) {
+        return {
+            typingStarted: false,
+            typingStopped: false,
+            response: '',
+            timedOut: true,
+            source: 'dom',
+            phase: 'pre_capture',
+            error: `Timeout during pre_capture(${provider})`
+        };
     }
 
     if (provider === 'qwen' || provider === 'deepseek' || provider === 'zai') {
@@ -2488,12 +2551,14 @@ async function getResponseWithTypingStatus(provider) {
             return {
                 typingStarted: true,
                 typingStopped: true,
-                response: networkCaptured
+                response: networkCaptured,
+                timedOut: false,
+                source: 'network',
+                phase: 'network_capture'
             };
         }
     }
 
-    // Capture OLD fingerprint BEFORE getting response (for detecting new vs old responses)
     try {
         if (provider === 'perplexity') {
             if (!responseState.perplexity.fingerprint && !responseState.perplexity.blockCount) {
@@ -2575,8 +2640,6 @@ async function getResponseWithTypingStatus(provider) {
         } else if (provider === 'qwen') {
             const oldFp = await webContents.executeJavaScript(`
                 (function() {
-                    // For Qwen: capture the LAST meaningful message BEFORE thinking started
-                    // Never capture "Thinking completed" as fingerprint
                     const msgs = document.querySelectorAll('.qwen-chat-message');
                     for (let i = msgs.length - 1; i >= 0; i--) {
                         const text = (msgs[i].textContent || '').trim();
@@ -2584,7 +2647,6 @@ async function getResponseWithTypingStatus(provider) {
                             return text.substring(0, 200);
                         }
                     }
-                    // Fallback: capture anything that's not thinking
                     const body = (document.body?.textContent || '').trim();
                     return body.substring(0, 200);
                 })()
@@ -2623,8 +2685,18 @@ async function getResponseWithTypingStatus(provider) {
         console.error(`[getResponseWithTyping] Error capturing old fingerprint for ${provider}:`, e.message);
     }
 
-    // Now get the actual response
-    let response = await getProviderResponse(provider);
+    let response = await getProviderResponse(provider, null, { deadlineAt });
+    if (response === PROXIMA_BUDGET_TIMEOUT) {
+        return {
+            typingStarted: false,
+            typingStopped: false,
+            response: '',
+            timedOut: true,
+            source: 'dom',
+            phase: 'response_capture',
+            error: `Timeout during response_capture(${provider})`
+        };
+    }
 
     if (provider === 'minimax') {
         const looksIncomplete = !response ||
@@ -2633,8 +2705,29 @@ async function getResponseWithTypingStatus(provider) {
 
         if (looksIncomplete) {
             for (let attempt = 0; attempt < 3; attempt++) {
-                await sleep(8000);
-                const retry = await getSimpleProviderResponse(provider, '');
+                if (!(await sleepWithBudget(8000, deadlineAt))) {
+                    return {
+                        typingStarted: false,
+                        typingStopped: false,
+                        response: '',
+                        timedOut: true,
+                        source: 'dom',
+                        phase: 'minimax_retry',
+                        error: `Timeout during minimax_retry(${provider})`
+                    };
+                }
+                const retry = await getSimpleProviderResponse(provider, '', { deadlineAt });
+                if (retry === PROXIMA_BUDGET_TIMEOUT) {
+                    return {
+                        typingStarted: false,
+                        typingStopped: false,
+                        response: '',
+                        timedOut: true,
+                        source: 'dom',
+                        phase: 'minimax_retry',
+                        error: `Timeout during minimax_retry(${provider})`
+                    };
+                }
                 if (retry && retry !== 'No response captured' && !/^Received\./i.test(retry)) {
                     response = retry;
                     break;
@@ -2643,7 +2736,6 @@ async function getResponseWithTypingStatus(provider) {
         }
     }
 
-    // Clean Perplexity-specific noise (query heading echo, trailing UI elements)
     if (provider === 'perplexity' && response) {
         response = cleanPerplexityResponse(response);
     }
@@ -2651,7 +2743,10 @@ async function getResponseWithTypingStatus(provider) {
     return {
         typingStarted: response && response.length > 0,
         typingStopped: true,
-        response
+        response,
+        timedOut: false,
+        source: 'dom',
+        phase: 'response_capture'
     };
 }
 
@@ -2729,10 +2824,11 @@ function getSimpleCaptureSelectors(provider) {
     ];
 }
 
-async function getSimpleProviderResponse(provider, oldFingerprint = '') {
+async function getSimpleProviderResponse(provider, oldFingerprint = '', options = {}) {
     const webContents = browserManager.getWebContents(provider);
     const selectors = getSimpleCaptureSelectors(provider);
     const selectorJson = JSON.stringify(selectors);
+    const deadlineAt = createDeadlineAt(options);
     let lastText = '';
     let stableCount = 0;
     const stableThreshold = provider === 'claude' ? 4 : (provider === 'perplexity' ? 4 : 3);
@@ -2760,6 +2856,9 @@ async function getSimpleProviderResponse(provider, oldFingerprint = '') {
     }
 
     for (let i = 0; i < 50; i++) {
+        if (!hasBudgetRemaining(deadlineAt, 50)) {
+            return PROXIMA_BUDGET_TIMEOUT;
+        }
         const text = await webContents.executeJavaScript(`
             (function() {
                 const selectors = ${selectorJson};
@@ -2783,17 +2882,17 @@ async function getSimpleProviderResponse(provider, oldFingerprint = '') {
                 function normalize(text) {
                     let out = (text || '')
                         .replace(/\u00a0/g, ' ')
-                        .replace(/Thinking completed\\s*/gi, '')
-                        .replace(/Thought for[^\\n]*/gi, '')
-                        .replace(/Stopped this response,?\\s*you can re-?edit[^\\n]*/gi, '')
-                        .replace(/Model demo platform\.[^\\n]*/gi, '')
-                        .replace(/Citation sources\\s*\\(\\d+\\)/gi, '')
-                        .replace(/\\n{3,}/g, '\\n\\n')
+                        .replace(/Thinking completed\s*/gi, '')
+                        .replace(/Thought for[^\n]*/gi, '')
+                        .replace(/Stopped this response,?\s*you can re-?edit[^\n]*/gi, '')
+                        .replace(/Model demo platform\.[^\n]*/gi, '')
+                        .replace(/Citation sources\s*\(\d+\)/gi, '')
+                        .replace(/\n{3,}/g, '\n\n')
                         .trim();
                     if (isMiniMax) {
                         out = out
                             .replace(/^Received\.[\s\S]{0,200}request[\s\S]*$/i, '')
-                            .replace(/^Thinking Process\\s*\\n[^\\n]*\\n+/i, '')
+                            .replace(/^Thinking Process\s*\n[^\n]*\n+/i, '')
                             .trim();
                     }
                     return out;
@@ -2807,9 +2906,9 @@ async function getSimpleProviderResponse(provider, oldFingerprint = '') {
                         const text = normalize(node.innerText || node.textContent || '');
                         if (!text || text.length < 2) continue;
                         const lower = text.toLowerCase();
-                        if (badText.some(x => lower === x || lower.startsWith(x + '\\n'))) continue;
+                        if (badText.some(x => lower === x || lower.startsWith(x + '\n'))) continue;
                         if (isMiniMax && /^received\.[\s\S]{0,200}request[\s\S]*$/i.test(text)) continue;
-                        if (/^(thinking|thought for|loading|generating|analyzing|searching)\\b/i.test(text) && text.length < 120) continue;
+                        if (/^(thinking|thought for|loading|generating|analyzing|searching)\b/i.test(text) && text.length < 120) continue;
                         candidates.push(text);
                     }
                 }
@@ -2830,7 +2929,7 @@ async function getSimpleProviderResponse(provider, oldFingerprint = '') {
                     oldFingerprint.startsWith(currentFingerprint.substring(0, Math.min(100, currentFingerprint.length))) ||
                     currentFingerprint.startsWith(oldFingerprint.substring(0, Math.min(100, oldFingerprint.length)));
                 if (sameAsOld) {
-                    await sleep(500);
+                    if (!(await sleepWithBudget(500, deadlineAt))) return PROXIMA_BUDGET_TIMEOUT;
                     continue;
                 }
             }
@@ -2850,7 +2949,9 @@ async function getSimpleProviderResponse(provider, oldFingerprint = '') {
             }
         }
 
-        await sleep(500);
+        if (!(await sleepWithBudget(500, deadlineAt))) {
+            return PROXIMA_BUDGET_TIMEOUT;
+        }
     }
 
     if ((!lastText || lastText === 'No response captured') && provider === 'mimo') {
@@ -2864,15 +2965,15 @@ async function getSimpleProviderResponse(provider, oldFingerprint = '') {
     return lastText || 'No response captured';
 }
 
-async function getProviderResponse(provider, customSelector = null) {
+async function getProviderResponse(provider, customSelector = null, options = {}) {
     const webContents = browserManager.getWebContents(provider);
     if (!webContents) {
         throw new Error(`Provider ${provider} not initialized`);
     }
 
+    const deadlineAt = createDeadlineAt(options);
     console.log(`[getProviderResponse] ${provider}: Using DOM fallback path...`);
 
-    // Get old fingerprint for detecting new responses
     let oldFingerprint = '';
     let oldBlockCount = 0;
     if (provider === 'perplexity') {
@@ -2888,674 +2989,194 @@ async function getProviderResponse(provider, customSelector = null) {
         oldFingerprint = responseState[provider].fingerprint || '';
     }
 
-        // Smart typing wait — check if AI is currently typing, wait only if needed
-        try {
-            // Perplexity needs extra initial wait — it takes 2-4s to even START generating
-            if (provider === 'perplexity') {
-                await sleep(3000);
-            }
-            // Gemini thinking models take time before response starts
-            if (provider === 'gemini') {
-                await sleep(2000);
-            }
+    try {
+        if (provider === 'perplexity') {
+            if (!(await sleepWithBudget(3000, deadlineAt))) return PROXIMA_BUDGET_TIMEOUT;
+        }
+        if (provider === 'gemini') {
+            if (!(await sleepWithBudget(2000, deadlineAt))) return PROXIMA_BUDGET_TIMEOUT;
+        }
 
-            let typingDetected = false;
-            const typingNow = await isAITyping(provider);
-            if (typingNow.isTyping) {
-                typingDetected = true;
-            } else if (provider === 'perplexity' || provider === 'gemini' || provider === 'kimi' || provider === 'minimax' || provider === 'mimo' || provider === 'qwen' || provider === 'zai' || provider === 'deepseek') {
-                // May not have started typing yet — retry a few times
-                for (let retry = 0; retry < 6; retry++) {
-                    await sleep(500);
-                    const recheck = await isAITyping(provider);
-                    if (recheck.isTyping) {
-                        typingDetected = true;
-                        break;
-                    }
+        let typingDetected = false;
+        const typingNow = await isAITyping(provider);
+        if (typingNow.isTyping) {
+            typingDetected = true;
+        } else if (provider === 'perplexity' || provider === 'gemini' || provider === 'kimi' || provider === 'minimax' || provider === 'mimo' || provider === 'qwen' || provider === 'zai' || provider === 'deepseek') {
+            for (let retry = 0; retry < 6; retry++) {
+                if (!(await sleepWithBudget(500, deadlineAt))) return PROXIMA_BUDGET_TIMEOUT;
+                const recheck = await isAITyping(provider);
+                if (recheck.isTyping) {
+                    typingDetected = true;
+                    break;
                 }
             }
+        }
 
-            if (typingDetected) {
-                console.log(`[getProviderResponse] ${provider}: AI still typing, waiting...`);
-                const maxTypingWait = (provider === 'claude') ? 600 : 120;
-                let lastResponseSnap = '';
-                let stableResponseCount = 0;
-                for (let i = 0; i < maxTypingWait; i++) {
-                    const ts = await isAITyping(provider);
-                    if (!ts.isTyping) break;
-                    
-                    // Perplexity false positive fix: check if response text is stable
-                    // If response hasn't changed for 5 checks (2.5s) while "typing", it's done
-                    if (provider === 'perplexity' && i > 10) {
-                        try {
-                            const snap = await webContents.executeJavaScript(`
-                                (function() {
-                                    const blocks = document.querySelectorAll('[class*="prose"]:not(.prose-sm)');
-                                    if (blocks.length > 0) return blocks[blocks.length-1].textContent.length.toString();
-                                    return '0';
-                                })()
-                            `);
-                            if (snap === lastResponseSnap && snap !== '0') {
-                                stableResponseCount++;
-                                if (stableResponseCount >= 5) {
-                                    console.log(`[getProviderResponse] ${provider}: Response stable for 2.5s, breaking typing wait`);
-                                    break;
-                                }
-                            } else {
-                                stableResponseCount = 0;
-                                lastResponseSnap = snap;
+        if (typingDetected) {
+            console.log(`[getProviderResponse] ${provider}: AI still typing, waiting...`);
+            const maxTypingWait = (provider === 'claude') ? 600 : 120;
+            let lastResponseSnap = '';
+            let stableResponseCount = 0;
+            for (let i = 0; i < maxTypingWait; i++) {
+                if (!hasBudgetRemaining(deadlineAt, 50)) return PROXIMA_BUDGET_TIMEOUT;
+                const ts = await isAITyping(provider);
+                if (!ts.isTyping) break;
+
+                if (provider === 'perplexity' && i > 10) {
+                    try {
+                        const snap = await webContents.executeJavaScript(`
+                            (function() {
+                                const blocks = document.querySelectorAll('[class*="prose"]:not(.prose-sm)');
+                                if (blocks.length > 0) return blocks[blocks.length-1].textContent.length.toString();
+                                return '0';
+                            })()
+                        `);
+                        if (snap === lastResponseSnap && snap !== '0') {
+                            stableResponseCount++;
+                            if (stableResponseCount >= 5) {
+                                console.log(`[getProviderResponse] ${provider}: Response stable for 2.5s, breaking typing wait`);
+                                break;
                             }
-                        } catch(e) {}
-                    }
-                    
-                    if (i % 20 === 0 && i > 0) {
-                        console.log(`[getProviderResponse] ${provider}: Still typing (${i * 0.5}s)...`);
-                    }
-                    await sleep(500);
+                        } else {
+                            stableResponseCount = 0;
+                            lastResponseSnap = snap;
+                        }
+                    } catch (e) {}
                 }
-            } else if (provider === 'perplexity') {
-                // Even if no typing detected, Perplexity may have finished very fast
-                await sleep(3000);
+
+                if (i % 20 === 0 && i > 0) {
+                    console.log(`[getProviderResponse] ${provider}: Still typing (${i * 0.5}s)...`);
+                }
+                if (!(await sleepWithBudget(500, deadlineAt))) return PROXIMA_BUDGET_TIMEOUT;
             }
-        } catch (e) { }
+        } else if (provider === 'perplexity') {
+            if (!(await sleepWithBudget(3000, deadlineAt))) return PROXIMA_BUDGET_TIMEOUT;
+        }
+    } catch (e) {}
 
-        // Small delay for DOM to settle (Perplexity needs more time for math/LaTeX rendering)
-        await sleep((provider === 'claude' || provider === 'perplexity') ? 1500 : 500);
-
-    if (useSimpleDomCapture(provider)) {
-        return await getSimpleProviderResponse(provider, oldFingerprint);
+    if (!(await sleepWithBudget((provider === 'claude' || provider === 'perplexity') ? 1500 : 500, deadlineAt))) {
+        return PROXIMA_BUDGET_TIMEOUT;
     }
 
-    // STEP 4: DOM polling for response text
+    if (useSimpleDomCapture(provider)) {
+        return await getSimpleProviderResponse(provider, oldFingerprint, { deadlineAt });
+    }
+
     let lastText = '';
-        let stableCount = 0;
-        // Perplexity math/LaTeX renders in stages — need more stability checks
-        const STABLE_THRESHOLD = provider === 'perplexity' ? 5 : 3;
-        const MAX_POLLS = (provider === 'claude' || provider === 'perplexity') ? 60 : 40;
-        let foundNewResponse = false;
+    let stableCount = 0;
+    const STABLE_THRESHOLD = provider === 'perplexity' ? 5 : 3;
+    const MAX_POLLS = (provider === 'claude' || provider === 'perplexity') ? 60 : 40;
+    let foundNewResponse = false;
 
-
-        // Poll for stable response
-        for (let i = 0; i < MAX_POLLS; i++) {
-            const text = await webContents.executeJavaScript(`
+    for (let i = 0; i < MAX_POLLS; i++) {
+        if (!hasBudgetRemaining(deadlineAt, 50)) return PROXIMA_BUDGET_TIMEOUT;
+        const text = await webContents.executeJavaScript(`
             (function() {
                 const host = window.location.host;
-                
-                // DOM to Markdown Converter
-                const NL = String.fromCharCode(10);  // Actual newline character
-                
+                const NL = String.fromCharCode(10);
                 function domToMarkdown(element) {
                     if (!element) return '';
-                    
                     let markdown = '';
                     const children = element.childNodes;
-                    
                     for (let i = 0; i < children.length; i++) {
                         const node = children[i];
-                        
-                        // Text node
                         if (node.nodeType === 3) {
                             markdown += node.textContent;
                             continue;
                         }
-                        
-                        // Element node
                         if (node.nodeType === 1) {
                             const tag = node.tagName.toLowerCase();
-                            
-                            // Skip hidden elements
                             if (node.style && node.style.display === 'none') continue;
                             if (node.classList && node.classList.contains('sr-only')) continue;
-                            
-                            // Code blocks (pre > code)
                             if (tag === 'pre') {
                                 const codeEl = node.querySelector('code');
-                                // Use innerText to preserve visual line breaks (especially for ChatGPT)
-                                // textContent doesn't preserve newlines when lines are in separate elements
                                 const codeText = codeEl ? codeEl.innerText : node.innerText;
-                                // Try to detect language from class
                                 let lang = '';
-                                const langClass = node.className.match(/language-(\\w+)/) || 
-                                                 (codeEl && codeEl.className.match(/language-(\\w+)/));
+                                const langClass = node.className.match(/language-(\w+)/) || 
+                                                 (codeEl && codeEl.className.match(/language-(\w+)/));
                                 if (langClass) lang = langClass[1];
-                                // Also check for common language indicators
                                 const langSpan = node.querySelector('[class*="lang"], [class*="language"]');
                                 if (!lang && langSpan) {
                                     lang = langSpan.textContent.trim().toLowerCase();
                                 }
-                                // Check parent for language hint
-                                const parentLang = node.closest('[class*="language-"]');
-                                if (!lang && parentLang) {
-                                    const match = parentLang.className.match(/language-(\\w+)/);
-                                    if (match) lang = match[1];
-                                }
-                                // Use actual newlines
-                                markdown += NL + NL + '\`\`\`' + lang + NL + codeText.trim() + NL + '\`\`\`' + NL + NL;
+                                markdown += NL + String.fromCharCode(96).repeat(3) + lang + NL + codeText.trim() + NL + String.fromCharCode(96).repeat(3) + NL;
                                 continue;
                             }
-                            
-                            // Inline code
-                            if (tag === 'code' && !node.closest('pre')) {
-                                markdown += '\`' + node.textContent + '\`';
+                            if (tag === 'code') {
+                                if (node.parentElement && node.parentElement.tagName.toLowerCase() === 'pre') continue;
+                                markdown += String.fromCharCode(96) + node.textContent + String.fromCharCode(96);
                                 continue;
                             }
-                            
-                            // Headers
-                            if (tag === 'h1') {
-                                markdown += NL + NL + '# ' + domToMarkdown(node) + NL + NL;
-                                continue;
-                            }
-                            if (tag === 'h2') {
-                                markdown += NL + NL + '## ' + domToMarkdown(node) + NL + NL;
-                                continue;
-                            }
-                            if (tag === 'h3') {
-                                markdown += NL + NL + '### ' + domToMarkdown(node) + NL + NL;
-                                continue;
-                            }
-                            if (tag === 'h4') {
-                                markdown += NL + NL + '#### ' + domToMarkdown(node) + NL + NL;
-                                continue;
-                            }
-                            
-                            // Paragraphs
-                            if (tag === 'p') {
-                                markdown += NL + NL + domToMarkdown(node) + NL + NL;
-                                continue;
-                            }
-                            
-                            // Bold
                             if (tag === 'strong' || tag === 'b') {
                                 markdown += '**' + domToMarkdown(node) + '**';
                                 continue;
                             }
-                            
-                            // Italic
                             if (tag === 'em' || tag === 'i') {
                                 markdown += '*' + domToMarkdown(node) + '*';
                                 continue;
                             }
-                            
-                            // Links
+                            if (tag === 'br') {
+                                markdown += NL;
+                                continue;
+                            }
                             if (tag === 'a') {
-                                const href = node.getAttribute('href');
-                                const text = domToMarkdown(node);
-                                if (href && !href.startsWith('#') && !href.startsWith('javascript:')) {
+                                const text = node.textContent.trim();
+                                const href = node.href;
+                                if (href && text) {
                                     markdown += '[' + text + '](' + href + ')';
                                 } else {
                                     markdown += text;
                                 }
                                 continue;
                             }
-                            
-                            // Lists
-                            if (tag === 'ul' || tag === 'ol') {
-                                markdown += NL;
+                            if (tag.match(/^h[1-6]$/)) {
+                                const level = parseInt(tag[1]);
+                                const prefix = '#'.repeat(level);
+                                markdown += NL + prefix + ' ' + domToMarkdown(node).trim() + NL + NL;
+                                continue;
+                            }
+                            if (tag === 'ul') {
                                 const items = node.querySelectorAll(':scope > li');
-                                items.forEach((li, idx) => {
-                                    const prefix = tag === 'ol' ? (idx + 1) + '. ' : '- ';
-                                    markdown += prefix + domToMarkdown(li).trim() + NL;
-                                });
+                                for (const li of items) {
+                                    markdown += '- ' + domToMarkdown(li).trim() + NL;
+                                }
                                 markdown += NL;
                                 continue;
                             }
-                            
-                            // Skip list items if already processed by parent
-                            if (tag === 'li') {
-                                markdown += domToMarkdown(node);
-                                continue;
-                            }
-                            
-                            // Line breaks
-                            if (tag === 'br') {
+                            if (tag === 'ol') {
+                                const items = node.querySelectorAll(':scope > li');
+                                let num = 1;
+                                for (const li of items) {
+                                    markdown += num + '. ' + domToMarkdown(li).trim() + NL;
+                                    num++;
+                                }
                                 markdown += NL;
                                 continue;
                             }
-                            
-                            // Horizontal rule
-                            if (tag === 'hr') {
-                                markdown += NL + NL + '---' + NL + NL;
-                                continue;
-                            }
-                            
-                            // Blockquote
                             if (tag === 'blockquote') {
                                 const lines = domToMarkdown(node).split(NL);
-                                markdown += NL + lines.map(l => '> ' + l).join(NL) + NL;
-                                continue;
-                            }
-                            
-                            // Tables (basic support)
-                            if (tag === 'table') {
-                                const rows = node.querySelectorAll('tr');
-                                rows.forEach((row, rowIdx) => {
-                                    const cells = row.querySelectorAll('th, td');
-                                    const cellTexts = Array.from(cells).map(c => c.textContent.trim());
-                                    markdown += '| ' + cellTexts.join(' | ') + ' |' + NL;
-                                    if (rowIdx === 0 && row.querySelector('th')) {
-                                        markdown += '| ' + cellTexts.map(() => '---').join(' | ') + ' |' + NL;
-                                    }
-                                });
+                                for (const line of lines) {
+                                    if (line.trim()) markdown += '> ' + line + NL;
+                                }
                                 markdown += NL;
                                 continue;
                             }
-                            
-                            // Div and other containers - recurse
-                            if (tag === 'div' || tag === 'span' || tag === 'section' || tag === 'article') {
-                                markdown += domToMarkdown(node);
+                            if (tag === 'p' || tag === 'div' || tag === 'section' || tag === 'article') {
+                                const content = domToMarkdown(node).trim();
+                                if (content) markdown += content + NL + NL;
                                 continue;
                             }
-                            
-                            // Default: just get text content for unknown elements
                             markdown += domToMarkdown(node);
                         }
                     }
-                    
                     return markdown;
                 }
-                
-                // Clean up markdown (remove excessive newlines)
-                function cleanMarkdown(md) {
-                    // Use RegExp with the actual NL character
-                    const excessiveNL = new RegExp(NL + '{4,}', 'g');
-                    return md
-                        .replace(excessiveNL, NL + NL + NL)  // Max 3 newlines
-                        .replace(/^\\s+/, '')                // Trim start
-                        .replace(/\\s+$/, '')                // Trim end
-                        .trim();
-                }
-                
-                // ChatGPT specific - use [data-message-author-role="assistant"]
-                if (host.includes('chatgpt') || host.includes('openai')) {
-                    const assistantMsgs = document.querySelectorAll('[data-message-author-role="assistant"]');
-                    if (assistantMsgs.length > 0) {
-                        const lastMsg = assistantMsgs[assistantMsgs.length - 1];
-                        const markdown = cleanMarkdown(domToMarkdown(lastMsg));
-                        if (markdown && markdown.length > 0) return markdown;
-                    }
-                    // Fallback to article > .prose
-                    const articles = document.querySelectorAll('article');
-                    for (let j = articles.length - 1; j >= 0; j--) {
-                        const article = articles[j];
-                        const content = article.querySelector('.prose, .markdown, [class*="markdown"]');
-                        if (content) {
-                            const markdown = cleanMarkdown(domToMarkdown(content));
-                            if (markdown && markdown.length > 0 && !markdown.includes('__oai_')) return markdown;
-                        }
-                    }
-                }
-                
-                // Perplexity specific - Capture the FULL last/newest answer
-                if (host.includes('perplexity')) {
-                    // Get all prose blocks
-                    const allProseBlocks = Array.from(document.querySelectorAll('[class*="prose"]:not(.prose-sm)'))
-                        .filter(block => {
-                            const text = block.textContent.trim();
-                            return text.length > 3 && 
-                                   !text.toLowerCase().includes('perplexity pro') &&
-                                   !text.includes('Ask anything') &&
-                                   !text.includes('Ask a follow-up') &&
-                                   !text.includes('Attach');
-                        });
-                    
-                    if (allProseBlocks.length > 0) {
-                        // Get the LAST prose block
-                        const lastBlock = allProseBlocks[allProseBlocks.length - 1];
-                        
-                        // Go UP to find the largest container that is still just ONE answer
-                        let answerContainer = lastBlock;
-                        let bestContainer = lastBlock;
-                        let bestLength = lastBlock.textContent.length;
-                        let parent = lastBlock.parentElement;
-                        
-                        for (let i = 0; i < 10 && parent; i++) {
-                            // Stop conditions — only stop at true page boundaries
-                            if (parent.tagName === 'MAIN' || parent.tagName === 'BODY' || parent.tagName === 'HTML') break;
-                            if (parent.querySelector('textarea, input[type="text"]')) break;
-                            
-                            const parentLength = parent.textContent.length;
-                            
-                            // Use this parent if it has more content but isn't too big
-                            if (parentLength > bestLength && parentLength < 50000) {
-                                bestContainer = parent;
-                                bestLength = parentLength;
-                            }
-                            
-                            parent = parent.parentElement;
-                        }
-                        
-                        // Convert to markdown
-                        const markdown = cleanMarkdown(domToMarkdown(bestContainer));
-                        if (markdown && markdown.length > 5) {
-                            return markdown;
-                        }
-                    }
-                    
-                    return '';
-                }
-                
-                // Claude specific - handles normal text AND artifact/code responses
-                // Claude has TWO panels: left=chat text, right=artifact code panel
-                if (host.includes('claude')) {
-                    let chatResponse = '';
-                    let artifactCode = '';
-                    
-                    // === PART A: Capture chat text (left panel) ===
-                    
-                    // A0: Try to find individual turn/message containers first
-                    // Claude 2026 uses individual turn containers for each message
-                    const turnSelectors = [
-                        '[data-testid="chat-message-turn"]',
-                        '[data-testid="assistant-turn"]',
-                        '[data-testid="ai-message"]',
-                        'div[data-turn-role="assistant"]',
-                        'div[data-role="assistant"]',
-                        'div[data-message-role="assistant"]'
-                    ];
-                    
-                    for (const sel of turnSelectors) {
-                        const turns = document.querySelectorAll(sel);
-                        if (turns.length > 0) {
-                            const lastTurn = turns[turns.length - 1];
-                            const md = cleanMarkdown(domToMarkdown(lastTurn));
-                            if (md && md.length > chatResponse.length) {
-                                chatResponse = md;
-                            }
-                        }
-                    }
-                    
-                    // A1: Try modern Claude UI selectors for chat messages
-                    if (chatResponse.length < 50) {
-                        const chatSelectors = [
-                            '[data-is-streaming]',
-                            '.font-claude-message',
-                            '[class*="claude"][class*="message"]',
-                            '[class*="response"][class*="content"]',
-                            '[class*="assistant"][class*="message"]'
-                        ];
-                        
-                        for (const sel of chatSelectors) {
-                            const elements = document.querySelectorAll(sel);
-                            if (elements.length > 0) {
-                                const lastEl = elements[elements.length - 1];
-                                const md = cleanMarkdown(domToMarkdown(lastEl));
-                                if (md && md.length > chatResponse.length) {
-                                    chatResponse = md;
-                                }
-                            }
-                        }
-                    }
-                    
-                    // A2: Try prose blocks for chat
-                    if (chatResponse.length < 50) {
-                        const proseBlocks = document.querySelectorAll('.prose, [class*="prose"]');
-                        if (proseBlocks.length > 0) {
-                            const lastBlock = proseBlocks[proseBlocks.length - 1];
-                            const md = cleanMarkdown(domToMarkdown(lastBlock));
-                            if (md && md.length > chatResponse.length) {
-                                chatResponse = md;
-                            }
-                        }
-                    }
-
-                    // A3: Fallback for chat - find message-like containers
-                    // IMPORTANT: Never grab the full conversation container
-                    if (chatResponse.length < 50) {
-                        const allDivs = document.querySelectorAll('div[class]');
-                        let candidates = [];
-                        for (const div of allDivs) {
-                            const text = div.innerText || '';
-                            if (text.length < 100) continue;
-                            
-                            // Skip sidebar/navigation content
-                            const sidebarKeywords = ['New chat', 'Chats', 'Projects', 'Recents', 'All chats', 'Free plan', 'Artifacts', 'Hide', 'Code'];
-                            let sidebarScore = 0;
-                            for (const kw of sidebarKeywords) {
-                                if (text.includes(kw)) sidebarScore++;
-                            }
-                            if (sidebarScore >= 3) continue;
-                            
-                            if (div.closest('nav, header, footer, aside, [class*="sidebar"], [class*="nav"], [class*="menu"], [class*="drawer"], [class*="panel"][class*="left"]')) continue;
-                            const className = div.className || '';
-                            if (className.includes('sidebar') || className.includes('nav') || className.includes('menu') || className.includes('drawer') || className.includes('conversation-list')) continue;
-                            if (div.querySelector('textarea, input[type="text"]')) continue;
-                            if (text.includes('Claude can make mistakes') && text.length < 200) continue;
-                            
-                            candidates.push({ el: div, text: text, len: text.length });
-                        }
-                        
-                        // Sort by length, pick a reasonable-sized candidate (not the mega-container)
-                        candidates.sort((a, b) => a.len - b.len);
-                        // Pick the SMALLEST candidate that is > 100 chars - more likely to be a single message
-                        for (const c of candidates) {
-                            if (c.len > 100 && c.len < 5000) {
-                                chatResponse = cleanMarkdown(c.text);
-                                break;
-                            }
-                        }
-                        // If nothing small found, use last candidate but clean it
-                        if (chatResponse.length < 50 && candidates.length > 0) {
-                            chatResponse = candidates[candidates.length - 1].text;
-                            chatResponse = cleanMarkdown(chatResponse);
-                        }
-                    }
-                    
-                    // A4: POST-PROCESSING - Detect and clean full conversation captures
-                    // If response includes timestamps like "4:43 AM" or "10:30 PM", 
-                    // it means we grabbed the full conversation. Extract only the last response.
-                    if (chatResponse.length > 0) {
-                        const tsPattern = new RegExp('\\d{1,2}:\\d{2}\\s*(AM|PM)', 'gi');
-                        const hasTimestamps = tsPattern.test(chatResponse);
-                        
-                        if (hasTimestamps) {
-                            // Split by timestamp pattern to get individual messages
-                            const splitPattern = new RegExp('\\d{1,2}:\\d{2}\\s*(AM|PM)', 'gi');
-                            const parts = chatResponse.split(splitPattern);
-                            
-                            // Filter out short parts (user messages are typically short)
-                            // and take the LAST substantial part (the latest AI response)
-                            let lastResponse = '';
-                            for (let i = parts.length - 1; i >= 0; i--) {
-                                const part = (parts[i] || '').trim();
-                                // Skip empty, very short (user msgs), and AM/PM artifacts
-                                if (!part || part.length < 20) continue;
-                                if (part === 'AM' || part === 'PM') continue;
-                                lastResponse = part;
-                                break;
-                            }
-                            
-                            if (lastResponse.length > 20) {
-                                chatResponse = cleanMarkdown(lastResponse);
-                            }
-                        }
-                    }
-                    
-                    // === PART B: Capture artifact code (right side panel) ===
-                    // Claude opens artifacts in a side panel with code/preview
-                    
-                    // B1: Look for the artifact viewer panel
-                    // Artifact panel selectors - it's a separate panel from the chat
-                    const artifactSelectors = [
-                        '[data-testid="artifact-view"]',
-                        '[class*="artifact-renderer"]', 
-                        '[class*="artifact-content"]',
-                        '[class*="artifact"][class*="panel"]',
-                        '[class*="artifact"][class*="viewer"]',
-                        '[class*="code-editor"]',
-                        '[class*="artifact"]'
-                    ];
-                    
-                    let artifactPanel = null;
-                    let artifactTitle = '';
-                    
-                    for (const sel of artifactSelectors) {
-                        const panels = document.querySelectorAll(sel);
-                        if (panels.length > 0) {
-                            // Use the last/most recent artifact panel
-                            artifactPanel = panels[panels.length - 1];
-                            // Try to get artifact title
-                            const titleEl = artifactPanel.querySelector('[class*="title"], [class*="name"], [class*="header"] span, h1, h2, h3');
-                            if (titleEl) artifactTitle = titleEl.textContent.trim();
-                            break;
-                        }
-                    }
-                    
-                    // B2: Extract code from artifact panel
-                    if (artifactPanel) {
-                        // Look for code elements in the artifact panel
-                        const codeElements = artifactPanel.querySelectorAll('pre code, pre, code, [class*="code-block"], [class*="CodeMirror"], [class*="monaco"]');
-                        for (const codeEl of codeElements) {
-                            const codeText = codeEl.innerText || codeEl.textContent || '';
-                            if (codeText.trim().length > artifactCode.length) {
-                                artifactCode = codeText.trim();
-                            }
-                        }
-                        
-                        // If no code elements found, try innerText of the whole panel
-                        if (artifactCode.length < 10) {
-                            const panelText = artifactPanel.innerText || '';
-                            if (panelText.length > 50) {
-                                artifactCode = panelText;
-                            }
-                        }
-                    }
-                    
-                    // B3: If no artifact panel found, search ENTIRE page for big code blocks
-                    // that aren't in the chat area
-                    if (artifactCode.length < 10) {
-                        const allPres = document.querySelectorAll('pre, code');
-                        let biggestCode = '';
-                        for (const pre of allPres) {
-                            const text = pre.innerText || '';
-                            // Only grab substantial code blocks (likely artifacts)
-                            if (text.length > 100 && text.length > biggestCode.length) {
-                                biggestCode = text;
-                            }
-                        }
-                        if (biggestCode.length > 100) {
-                            artifactCode = biggestCode;
-                        }
-                    }
-                    
-                    // B4: Also try to find ALL artifact cards/buttons in the chat
-                    // and extract their titles (even if code is in side panel)
-                    const artifactButtons = document.querySelectorAll('button[class*="artifact"], [class*="artifact-block"], [data-component-name*="Artifact"]');
-                    let artifactTitles = [];
-                    artifactButtons.forEach(btn => {
-                        const title = btn.textContent.trim();
-                        if (title && title.length > 2 && title.length < 200) {
-                            artifactTitles.push(title);
-                        }
-                    });
-                    
-                    // === PART C: Combine chat text + artifact code ===
-                    let fullResponse = chatResponse;
-                    
-                    if (artifactCode && artifactCode.length > 10) {
-                        // Detect language from title
-                        let lang = '';
-                        const titleLower = (artifactTitle || '').toLowerCase();
-                        if (titleLower.includes('.jsx') || titleLower.includes('.tsx') || titleLower.includes('react')) lang = 'jsx';
-                        else if (titleLower.includes('.js')) lang = 'javascript';
-                        else if (titleLower.includes('.ts')) lang = 'typescript';
-                        else if (titleLower.includes('.py')) lang = 'python';
-                        else if (titleLower.includes('.html')) lang = 'html';
-                        else if (titleLower.includes('.css')) lang = 'css';
-                        else if (titleLower.includes('.json')) lang = 'json';
-                        else if (titleLower.includes('.md')) lang = 'markdown';
-                        
-                        // Add artifact code to response
-                        if (artifactTitle) {
-                            fullResponse += NL + NL + '**Artifact: ' + artifactTitle + '**' + NL;
-                        }
-                        fullResponse += NL + '\`\`\`' + lang + NL + artifactCode + NL + '\`\`\`' + NL;
-                    }
-                    
-                    // Add artifact title list if we found buttons but no code
-                    if (artifactTitles.length > 0 && artifactCode.length < 10) {
-                        fullResponse += NL + NL + '**Artifacts created:**' + NL;
-                        artifactTitles.forEach(t => {
-                            fullResponse += '- ' + t + NL;
-                        });
-                    }
-                    
-                    if (fullResponse && fullResponse.length > 0) return cleanMarkdown(fullResponse);
-                }
-                
-                // Gemini specific - updated selectors
-                if (host.includes('gemini') || host.includes('google')) {
-                    // 1. Try message-content elements (Gemini's main container)
-                    const msgContent = document.querySelectorAll('message-content, .message-content, [class*="response-content"]');
-                    if (msgContent.length > 0) {
-                        const lastMsg = msgContent[msgContent.length - 1];
-                        const markdown = cleanMarkdown(domToMarkdown(lastMsg));
-                        if (markdown && markdown.length > 0) return markdown;
-                    }
-                    
-                    // 2. Try model response containers
-                    const modelResponses = document.querySelectorAll('.model-response, [class*="model-response"], [class*="response-container"]');
-                    if (modelResponses.length > 0) {
-                        const lastResponse = modelResponses[modelResponses.length - 1];
-                        const markdown = cleanMarkdown(domToMarkdown(lastResponse));
-                        if (markdown && markdown.length > 0) return markdown;
-                    }
-                    
-                    // 3. Try markdown containers
-                    const markdownContainers = document.querySelectorAll('[class*="markdown"], .markdown-content');
-                    if (markdownContainers.length > 0) {
-                        const lastMd = markdownContainers[markdownContainers.length - 1];
-                        const markdown = cleanMarkdown(domToMarkdown(lastMd));
-                        if (markdown && markdown.length > 0) return markdown;
-                    }
-                    
-                    // 4. Try response-container-content (newer Gemini)
-                    const responseContent = document.querySelectorAll('[class*="response"][class*="content"]');
-                    if (responseContent.length > 0) {
-                        const lastResp = responseContent[responseContent.length - 1];
-                        const markdown = cleanMarkdown(domToMarkdown(lastResp));
-                        if (markdown && markdown.length > 0) return markdown;
-                    }
-                }
-
-                // Qwen specific - capture the markdown content div directly
-                if (host.includes('qwen')) {
-                    // Qwen renders response inside .qwen-markdown div
-                    // The div is empty until content is streamed in
-                    // Use response-message-content textContent as primary source
-                    const respContent = document.querySelector('.response-message-content');
-                    if (respContent) {
-                        const rawText = (respContent.textContent || '').trim();
-                        // Skip "Thinking completed" placeholder and very short content
-                        if (rawText.length > 25 && !rawText.includes('Thinking completed')) {
-                            return rawText;
-                        }
-                    }
-                    // Fallback: check the phase-answer div's direct text (no recursion)
-                    const phaseDiv = document.querySelector('.phase-answer');
-                    if (phaseDiv) {
-                        const childTexts = [];
-                        for (let i = 0; i < phaseDiv.children.length; i++) {
-                            const childText = phaseDiv.children[i].textContent || '';
-                            if (childText.trim().length > 25 && !childText.includes('Thinking completed')) {
-                                childTexts.push(childText.trim());
-                            }
-                        }
-                        if (childTexts.length > 0) {
-                            return childTexts.join('\n').substring(0, 2000);
-                        }
-                    }
-                    // Fallback: try qwen-markdown (last resort)
-                    const qwenMarkdown = document.querySelector('.qwen-markdown');
-                    if (qwenMarkdown) {
-                        const markdown = cleanMarkdown(domToMarkdown(qwenMarkdown));
-                        if (markdown && markdown.length > 25 && !markdown.includes('Thinking completed')) {
-                            return markdown;
-                        }
-                    }
-                }
-
-                // Kimi / MiniMax / MiMo - generic modern chat extraction
-                if (host.includes('kimi') || host.includes('minimax') || host.includes('xiaomimimo') || host.includes('qwen') || host.includes('z.ai') || host.includes('deepseek')) {
+                let responseText = '';
+                let foundElement = null;
+                if (host.includes('chat.openai.com') || host.includes('chatgpt.com')) {
+                    const messages = document.querySelectorAll('[data-message-author-role="assistant"]');
+                    if (messages.length > 0) foundElement = messages[messages.length - 1];
+                } else {
                     const selectors = [
                         '[data-message-author-role="assistant"]',
                         '[data-testid*="assistant"]',
@@ -3568,147 +3189,59 @@ async function getProviderResponse(provider, customSelector = null) {
                         '.prose',
                         '[class*="prose"]'
                     ];
-
                     for (const selector of selectors) {
                         const elements = document.querySelectorAll(selector);
                         for (let i = elements.length - 1; i >= 0; i--) {
-                            const el = elements[i];
-                            const markdown = cleanMarkdown(domToMarkdown(el));
-                            if (markdown && markdown.length > 20) return markdown;
+                            const text = (elements[i].innerText || elements[i].textContent || '').trim();
+                            if (text.length > 20) {
+                                foundElement = elements[i];
+                                break;
+                            }
                         }
+                        if (foundElement) break;
                     }
                 }
-                
-                return '';
+                if (foundElement) {
+                    responseText = domToMarkdown(foundElement).trim();
+                    responseText = responseText
+                        .replace(/\n{3,}/g, '\n\n')
+                        .replace(/^[\s\n]+|[\s\n]+$/g, '')
+                        .trim();
+                }
+                return responseText;
             })()
-        `);
+        `).catch(() => '');
 
-
-            if (text && text.length > 0) {
-                // For Perplexity: Check if this is actually a NEW response (not the old one)
-                if (provider === 'perplexity' && !foundNewResponse) {
-                    // Get current block count and fingerprint
-                    const currentData = await webContents.executeJavaScript(`
-                    (function() {
-                        const proseBlocks = Array.from(document.querySelectorAll('[class*="prose"]:not(.prose-sm)'))
-                            .filter(block => {
-                                const text = block.textContent.trim();
-                                return text.length > 3 && 
-                                       !text.toLowerCase().includes('perplexity pro') &&
-                                       !text.includes('Ask anything') &&
-                                       !text.includes('Ask a follow-up') &&
-                                       !text.includes('Attach');
-                            });
-                        if (proseBlocks.length > 0) {
-                            const lastBlock = proseBlocks[proseBlocks.length - 1];
-                            return {
-                                count: proseBlocks.length,
-                                fingerprint: lastBlock.textContent.substring(0, 200).trim()
-                            };
-                        }
-                        return { count: 0, fingerprint: '' };
-                    })()
-                `).catch(() => ({ count: 0, fingerprint: '' }));
-
-                    const currentBlockCount = currentData.count;
-                    const currentFingerprint = currentData.fingerprint;
-
-                    // NEW response detected if block count increased OR fingerprint changed
-                    const blockCountIncreased = oldBlockCount > 0 && currentBlockCount > oldBlockCount;
-                    const fingerprintChanged = oldFingerprint &&
-                        currentFingerprint !== oldFingerprint &&
-                        !oldFingerprint.startsWith(currentFingerprint.substring(0, 100)) &&
-                        !currentFingerprint.startsWith(oldFingerprint.substring(0, 100));
-
-                    if (blockCountIncreased || fingerprintChanged) {
-
-                        foundNewResponse = true;
-                    } else if (oldFingerprint || oldBlockCount > 0) {
-
-                        await sleep(500);
-                        continue;
-                    } else {
-                        // No old fingerprint/count means this is first response
-                        foundNewResponse = true;
-                    }
-                }
-
-                // Qwen-specific response detection
-                // IMPORTANT: Keep polling until real content appears
-                // The problem: initial capture returns "Thinking completed"
-                // We must NOT break on thinking-complete; continue waiting
-                if (provider === 'qwen') {
-                    const qwenStatus = await webContents.executeJavaScript(`
-                        (function() {
-                            const rc = document.querySelector('.response-message-content');
-                            if (!rc) return { hasAnswer: false, text: '' };
-                            const text = (rc.textContent || '').trim();
-                            // Real answer: content is > 25 chars and NOT just "Thinking completed"
-                            return { hasAnswer: text.length > 25 && !text.includes('Thinking completed'), text: text };
-                        })()
-                    `).catch(() => ({ hasAnswer: false, text: '' }));
-
-                    if (qwenStatus.hasAnswer) {
-                        // Answer is ready - directly capture from response-message-content
-                        const answerText = await webContents.executeJavaScript(`
-                            (function() {
-                                const rc = document.querySelector('.response-message-content');
-                                if (!rc) return '';
-                                const allText = (rc.textContent || '').trim();
-                                return allText.replace(/Thinking completed\s*/gi, '').trim();
-                            })()
-                        `).catch(() => '');
-                        return answerText || 'No response captured';
-                    } else {
-                        // Still thinking or no content yet - keep polling
-                        // Do NOT break, continue the loop
-                        await sleep(1000);
-                        continue;
-                    }
-                }
-
-                // For non-Perplexity providers: make sure this is a NEW response
-                if (provider !== 'perplexity' && provider !== 'qwen' && oldFingerprint && !foundNewResponse) {
-                    const currentFingerprint = text.substring(0, 200).trim();
-                    if (currentFingerprint === oldFingerprint ||
-                        oldFingerprint.startsWith(currentFingerprint.substring(0, 100)) ||
-                        currentFingerprint.startsWith(oldFingerprint.substring(0, 100))) {
-
-                        await sleep(500);
-                        continue;
-                    } else {
-
-                        foundNewResponse = true;
-                    }
-                }
-
-                if (text === lastText) {
+        const cleaned = (text || '').trim();
+        if (cleaned) {
+            const currentFingerprint = cleaned.substring(0, 200).trim();
+            const isNewResponse = !oldFingerprint ||
+                currentFingerprint !== oldFingerprint ||
+                (provider === 'perplexity' && currentFingerprint.length > 100 && !oldFingerprint.startsWith(currentFingerprint.substring(0, 100))) ||
+                (provider === 'perplexity' && oldBlockCount > 0);
+            if (isNewResponse) {
+                foundNewResponse = true;
+                if (cleaned === lastText) {
                     stableCount++;
                     if (stableCount >= STABLE_THRESHOLD) {
-                        console.log('[getProviderResponse] ✓ Captured (' + text.length + ' chars)');
-                        // Clear the old fingerprint after successful capture
-                        if (provider === 'perplexity') {
-                            responseState.perplexity.fingerprint = '';
-                            responseState.perplexity.blockCount = 0;
-                        }
                         if (responseState[provider]) {
                             responseState[provider].fingerprint = '';
+                            if (provider === 'perplexity') responseState.perplexity.blockCount = 0;
                         }
-                        return text;
+                        return cleaned;
                     }
                 } else {
+                    lastText = cleaned;
                     stableCount = 0;
-                    lastText = text;
                 }
             }
-
-            await sleep(500);
         }
+        if (!(await sleepWithBudget(500, deadlineAt))) return PROXIMA_BUDGET_TIMEOUT;
+    }
 
-        return lastText || 'No response captured';
+    return foundNewResponse ? lastText : (lastText || 'No response captured');
 }
 
-// Clean Perplexity response — strip query heading echo and trailing UI noise
 function cleanPerplexityResponse(text) {
     if (!text || text.length === 0) return text;
     
