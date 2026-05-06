@@ -415,64 +415,73 @@ class AIProvider {
         const timeoutMs = Number(options.timeoutMs) > 0 ? Number(options.timeoutMs) : 120000;
         const deadlineAt = Date.now() + timeoutMs;
 
-        await this.ensureInitialized();
+        try {
+            await this.ensureInitialized();
 
-        console.error(`[${this.name}] Checking if AI is still typing from previous request...`);
-        let typingCheck = await this.getTypingStatus();
-        let waitCount = 0;
-        while (typingCheck.isTyping && waitCount < 5) {
-            this._requireRemaining(deadlineAt, 'pre-send typing drain');
-            console.error(`[${this.name}] AI still typing, waiting...`);
-            await this.sleep(1000);
-            typingCheck = await this.getTypingStatus();
-            waitCount++;
-        }
+            console.error(`[${this.name}] Checking if AI is still typing from previous request...`);
+            let typingCheck = await this.getTypingStatus();
+            let waitCount = 0;
+            while (typingCheck.isTyping && waitCount < 5) {
+                this._requireRemaining(deadlineAt, 'pre-send typing drain');
+                console.error(`[${this.name}] AI still typing, waiting...`);
+                await this.sleep(1000);
+                typingCheck = await this.getTypingStatus();
+                waitCount++;
+            }
 
-        console.error(`[${this.name}] Sending message...`);
-        const sendBudgetMs = this._requireRemaining(deadlineAt, 'sendMessage');
-        const sendResult = this._unwrapIPCResult(
-            await this.ipc.send('sendMessage', this.name, { message, timeoutMs: sendBudgetMs }, { timeoutMs: Math.max(sendBudgetMs + 2000, 1000) }),
-            'sendMessage'
-        );
+            console.error(`[${this.name}] Sending message...`);
+            const sendBudgetMs = this._requireRemaining(deadlineAt, 'sendMessage');
+            const sendResult = this._unwrapIPCResult(
+                await this.ipc.send('sendMessage', this.name, { message, timeoutMs: sendBudgetMs }, { timeoutMs: Math.max(sendBudgetMs + 2000, 1000) }),
+                'sendMessage'
+            );
 
-        const directResponse = sendResult && sendResult.result && typeof sendResult.result.response === 'string'
-            ? sendResult.result.response.trim()
-            : '';
-        if (directResponse) {
-            return this._classifyOutcome(directResponse, null, {
-                elapsedMs: Date.now() - start,
-                timeoutMs,
-                source: 'api',
-                phase: 'send'
-            });
-        }
+            const directResponse = sendResult && sendResult.result && typeof sendResult.result.response === 'string'
+                ? sendResult.result.response.trim()
+                : '';
+            if (directResponse) {
+                return this._classifyOutcome(directResponse, null, {
+                    elapsedMs: Date.now() - start,
+                    timeoutMs,
+                    source: sendResult.result.source || 'api',
+                    phase: 'send'
+                });
+            }
 
-        console.error(`[${this.name}] Waiting for response (with typing detection)...`);
-        const responseBudgetMs = this._requireRemaining(deadlineAt, 'response capture');
-        const result = this._unwrapIPCResult(
-            await this.ipc.send('getResponseWithTyping', this.name, { timeoutMs: responseBudgetMs }, { timeoutMs: Math.max(responseBudgetMs + 2000, 1000) }),
-            'getResponseWithTyping'
-        );
+            console.error(`[${this.name}] Waiting for response (with typing detection)...`);
+            const responseBudgetMs = this._requireRemaining(deadlineAt, 'response capture');
+            const result = this._unwrapIPCResult(
+                await this.ipc.send('getResponseWithTyping', this.name, { timeoutMs: responseBudgetMs }, { timeoutMs: Math.max(responseBudgetMs + 2000, 1000) }),
+                'getResponseWithTyping'
+            );
 
-        if (result.typingStarted) {
-            console.error(`[${this.name}] Typing detected and completed`);
-        }
+            if (result.typingStarted) {
+                console.error(`[${this.name}] Typing detected and completed`);
+            }
 
-        if (result.timedOut) {
-            return this._classifyOutcome('', new Error(result.error || 'Timeout during response capture'), {
+            if (result.timedOut) {
+                return this._classifyOutcome('', new Error(result.error || 'Timeout during response capture'), {
+                    elapsedMs: Date.now() - start,
+                    timeoutMs,
+                    source: result.source || 'dom',
+                    phase: result.phase || 'response_capture'
+                });
+            }
+
+            return this._classifyOutcome(result.response || 'No response received', null, {
                 elapsedMs: Date.now() - start,
                 timeoutMs,
                 source: result.source || 'dom',
                 phase: result.phase || 'response_capture'
             });
+        } catch (err) {
+            return this._classifyOutcome('', err, {
+                elapsedMs: Date.now() - start,
+                timeoutMs,
+                source: null,
+                phase: 'send_or_capture'
+            });
         }
-
-        return this._classifyOutcome(result.response || 'No response received', null, {
-            elapsedMs: Date.now() - start,
-            timeoutMs,
-            source: result.source || 'dom',
-            phase: result.phase || 'response_capture'
-        });
     }
 
     async _doChat(message, options = {}) {

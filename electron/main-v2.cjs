@@ -825,6 +825,13 @@ async function sendMessageToProvider(provider, message, forceDOM = false, option
         throw new Error(`Provider ${provider} not initialized`);
     }
 
+    if (provider === 'mimo') {
+        const loggedIn = await browserManager.isLoggedIn(provider);
+        if (!loggedIn) {
+            throw new Error('MiMo not logged in');
+        }
+    }
+
     const deadlineAt = createDeadlineAt(options);
     const preferDOMForProvider = false;
 
@@ -2859,7 +2866,7 @@ async function getSimpleProviderResponse(provider, oldFingerprint = '', options 
         if (!hasBudgetRemaining(deadlineAt, 50)) {
             return PROXIMA_BUDGET_TIMEOUT;
         }
-        const text = await webContents.executeJavaScript(`
+        const text = await webContents.executeJavaScript(String.raw`
             (function() {
                 const selectors = ${selectorJson};
                 const isMiniMax = ${JSON.stringify(provider === 'minimax')};
@@ -3070,7 +3077,7 @@ async function getProviderResponse(provider, customSelector = null, options = {}
 
     for (let i = 0; i < MAX_POLLS; i++) {
         if (!hasBudgetRemaining(deadlineAt, 50)) return PROXIMA_BUDGET_TIMEOUT;
-        const text = await webContents.executeJavaScript(`
+        const text = await webContents.executeJavaScript(String.raw`
             (function() {
                 const host = window.location.host;
                 const NL = String.fromCharCode(10);
