@@ -786,31 +786,6 @@ async function handleMCPRequest(request) {
 // Provider-Specific Interaction Functions
 
 const PERPLEXITY_PREFERRED_MODEL = 'claude46sonnetthinking';
-const PERPLEXITY_FALLBACK_MODEL = 'pplx_pro';
-
-async function tryPerplexityInProviderFallback(perplexityWebContents, message, reason = 'unknown') {
-    if (!perplexityWebContents) {
-        throw new Error(`Perplexity primary failed (${reason}) and Perplexity fallback view is not initialized`);
-    }
-
-    console.log(`[perplexity] Falling back in-provider to model ${PERPLEXITY_FALLBACK_MODEL} because ${reason}`);
-    await providerAPI.resetConversation('perplexity', perplexityWebContents);
-    const fallbackResponse = await providerAPI.sendViaAPI('perplexity', perplexityWebContents, message, {
-        modelPreference: PERPLEXITY_FALLBACK_MODEL
-    });
-
-    if (!fallbackResponse || !fallbackResponse.trim()) {
-        throw new Error(`Perplexity in-provider fallback returned empty response (${reason})`);
-    }
-
-    _apiResponseCache.perplexity = fallbackResponse;
-    return {
-        response: fallbackResponse,
-        fallbackProvider: 'perplexity',
-        fallbackModel: PERPLEXITY_FALLBACK_MODEL,
-        fallbackReason: reason
-    };
-}
 
 async function sendMessageToProvider(provider, message, forceDOM = false) {
     const webContents = browserManager.getWebContents(provider);
@@ -844,16 +819,10 @@ async function sendMessageToProvider(provider, message, forceDOM = false) {
             }
             console.log(`[${provider}] API returned empty \u2014 falling back to DOM`);
             delete _apiResponseCache[provider];
-            if (provider === 'perplexity') {
-                return await tryPerplexityInProviderFallback(webContents, message, 'empty API response');
-            }
         } catch (apiErr) {
             console.log(`[${provider}] API failed: ${apiErr.message} — falling back to DOM`);
             // Clear stale cache so getResponseWithTyping doesn't return old data
             delete _apiResponseCache[provider];
-            if (provider === 'perplexity') {
-                return await tryPerplexityInProviderFallback(webContents, message, apiErr.message || 'API failure');
-            }
         }
     } else if (preferDOMForProvider && !forceDOM) {
         console.log(`[${provider}] Skipping API-first so preferred UI model selection can be enforced before send`);
