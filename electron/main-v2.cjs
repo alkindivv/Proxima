@@ -204,7 +204,7 @@ async function restoreCookies(provider, ses) {
         const providerAuthDomains = {
             perplexity: { domain: 'perplexity.ai', authCookies: ['__Secure-next-auth.session-token', 'pplx_'] },
             chatgpt: { domain: 'openai.com', authCookies: ['__Secure-next-auth.session-token', '__cf_bm'] },
-            claude: { domain: 'claude.ai', authCookies: ['sessionKey', '__cf_bm'] },
+            claude: { domain: 'claude.ai', authCookies: ['sessionKey'] },
             gemini: { domain: 'google.com', authCookies: ['SID', 'HSID', 'SSID', '__Secure-1PSID', '__Secure-3PSID'] },
             kimi: { domain: 'kimi.com', authCookies: ['session', 'token', 'auth', 'access'] },
             minimax: { domain: 'minimax.io', authCookies: ['session', 'token', 'auth', 'access'] },

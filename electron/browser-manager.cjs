@@ -469,7 +469,13 @@ class BrowserManager {
             };
 
             const domain = providerDomains[provider];
-            if (domain && navUrl.includes(domain)) {
+            let hostname = '';
+            try {
+                hostname = new URL(navUrl).hostname.toLowerCase();
+            } catch (e) {}
+
+            const onProviderDomain = domain && (hostname === domain || hostname.endsWith('.' + domain));
+            if (onProviderDomain) {
                 console.log(`[Auth ${provider}] Auth complete! Closing popup and reloading.`);
                 setTimeout(() => {
                     if (!authWindow.isDestroyed()) {
@@ -634,10 +640,16 @@ class BrowserManager {
                     `);
                 case 'claude':
                     return await webContents.executeJavaScript(`
-                        (function() {
-                            const hasInput = !!document.querySelector('[contenteditable="true"]');
-                            const hasLoginPage = window.location.href.includes('/login');
-                            return hasInput && !hasLoginPage;
+                        (async function() {
+                            if (window.location.href.includes('/login')) return false;
+                            try {
+                                const res = await fetch('/api/organizations', { credentials: 'include' });
+                                if (!res.ok) return false;
+                                const orgs = await res.json();
+                                return Array.isArray(orgs) && orgs.length > 0;
+                            } catch (e) {
+                                return false;
+                            }
                         })()
                     `);
                 case 'gemini':
