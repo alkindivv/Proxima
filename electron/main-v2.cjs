@@ -2496,30 +2496,34 @@ async function getResponseWithTypingStatus(provider) {
     // Capture OLD fingerprint BEFORE getting response (for detecting new vs old responses)
     try {
         if (provider === 'perplexity') {
-            const oldData = await webContents.executeJavaScript(`
-                (function() {
-                    const proseBlocks = Array.from(document.querySelectorAll('[class*="prose"]:not(.prose-sm)'))
-                        .filter(block => {
-                            const text = block.textContent.trim();
-                            return text.length > 3 && 
-                                   !text.toLowerCase().includes('perplexity pro') &&
-                                   !text.includes('Ask anything') &&
-                                   !text.includes('Ask a follow-up') &&
-                                   !text.includes('Attach');
-                        });
-                    if (proseBlocks.length > 0) {
-                        const lastBlock = proseBlocks[proseBlocks.length - 1];
-                        return {
-                            count: proseBlocks.length,
-                            fingerprint: lastBlock.textContent.substring(0, 200).trim()
-                        };
-                    }
-                    return { count: 0, fingerprint: '' };
-                })()
-            `).catch(() => ({ count: 0, fingerprint: '' }));
-            responseState.perplexity.fingerprint = oldData.fingerprint;
-            responseState.perplexity.blockCount = oldData.count;
-            console.log(`[Perplexity] Old response data: { count: ${oldData.count}, fingerprint: '${oldData.fingerprint.substring(0, 50)}...' }`);
+            if (!responseState.perplexity.fingerprint && !responseState.perplexity.blockCount) {
+                const oldData = await webContents.executeJavaScript(`
+                    (function() {
+                        const proseBlocks = Array.from(document.querySelectorAll('[class*="prose"]:not(.prose-sm)'))
+                            .filter(block => {
+                                const text = block.textContent.trim();
+                                return text.length > 3 && 
+                                       !text.toLowerCase().includes('perplexity pro') &&
+                                       !text.includes('Ask anything') &&
+                                       !text.includes('Ask a follow-up') &&
+                                       !text.includes('Attach');
+                            });
+                        if (proseBlocks.length > 0) {
+                            const lastBlock = proseBlocks[proseBlocks.length - 1];
+                            return {
+                                count: proseBlocks.length,
+                                fingerprint: lastBlock.textContent.substring(0, 200).trim()
+                            };
+                        }
+                        return { count: 0, fingerprint: '' };
+                    })()
+                `).catch(() => ({ count: 0, fingerprint: '' }));
+                responseState.perplexity.fingerprint = oldData.fingerprint;
+                responseState.perplexity.blockCount = oldData.count;
+                console.log(`[Perplexity] Old response data: { count: ${oldData.count}, fingerprint: '${oldData.fingerprint.substring(0, 50)}...' }`);
+            } else {
+                console.log(`[Perplexity] Reusing pre-send fingerprint: { count: ${responseState.perplexity.blockCount}, fingerprint: '${String(responseState.perplexity.fingerprint || '').substring(0, 50)}...' }`);
+            }
         } else if (provider === 'claude') {
             const oldFp = await webContents.executeJavaScript(`
                 (function() {
@@ -2652,7 +2656,7 @@ async function getResponseWithTypingStatus(provider) {
 }
 
 function useSimpleDomCapture(provider) {
-    return ['claude', 'gemini', 'kimi', 'minimax', 'mimo', 'qwen', 'zai', 'deepseek'].includes(provider);
+    return ['perplexity', 'claude', 'gemini', 'kimi', 'minimax', 'mimo', 'qwen', 'zai', 'deepseek'].includes(provider);
 }
 
 function getSimpleCaptureSelectors(provider) {
@@ -2668,6 +2672,15 @@ function getSimpleCaptureSelectors(provider) {
             '[class*="assistant"][class*="message"]',
             '.prose',
             '[class*="prose"]'
+        ];
+    }
+
+    if (provider === 'perplexity') {
+        return [
+            '[class*="prose"]:not(.prose-sm)',
+            '.prose',
+            'article',
+            '[class*="markdown"]'
         ];
     }
 
@@ -2722,7 +2735,7 @@ async function getSimpleProviderResponse(provider, oldFingerprint = '') {
     const selectorJson = JSON.stringify(selectors);
     let lastText = '';
     let stableCount = 0;
-    const stableThreshold = provider === 'claude' ? 4 : 3;
+    const stableThreshold = provider === 'claude' ? 4 : (provider === 'perplexity' ? 4 : 3);
 
     async function getMiMoBodyFallback() {
         try {
