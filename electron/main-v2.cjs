@@ -2719,11 +2719,16 @@ async function getResponseWithTypingStatus(provider, options = {}) {
     }
 
     if (provider === 'minimax') {
-        const looksIncomplete = !response ||
-            response === 'No response captured' ||
-            /^Received\./i.test(response);
+        const isMinimaxPlaceholder = (value) => {
+            const text = String(value || '').trim();
+            if (!text || text === 'No response captured') return true;
+            if (/^Received\./i.test(text)) return true;
+            if (/service is busy\. please try again later\.?/i.test(text)) return true;
+            if (text.length < 220 && /sedang memproses/i.test(text) && /(permintaan|request|terima kasih|menerima)/i.test(text)) return true;
+            return false;
+        };
 
-        if (looksIncomplete) {
+        if (isMinimaxPlaceholder(response)) {
             for (let attempt = 0; attempt < 3; attempt++) {
                 if (!(await sleepWithBudget(8000, deadlineAt))) {
                     return {
@@ -2748,11 +2753,26 @@ async function getResponseWithTypingStatus(provider, options = {}) {
                         error: `Timeout during minimax_retry(${provider})`
                     };
                 }
-                if (retry && retry !== 'No response captured' && !/^Received\./i.test(retry)) {
+                if (!isMinimaxPlaceholder(retry)) {
                     response = retry;
                     break;
                 }
             }
+        }
+    }
+
+    if (provider === 'mimo' && (!response || response === 'No response captured')) {
+        const mimoUrl = String(webContents.getURL ? webContents.getURL() : '');
+        if (/account\.xiaomi\.com|\/login|\/auth/i.test(mimoUrl)) {
+            return {
+                typingStarted: false,
+                typingStopped: true,
+                response: '',
+                timedOut: false,
+                source: 'dom',
+                phase: 'response_capture',
+                error: 'MiMo not logged in'
+            };
         }
     }
 

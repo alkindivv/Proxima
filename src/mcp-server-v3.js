@@ -265,6 +265,12 @@ function buildMessageWithFiles(message, files) {
 
 const FANOUT_PROVIDER_TIMEOUT_MS = 45000;
 
+function getFanoutProviderTimeoutMs(provider) {
+    if (provider === 'minimax') return 70000;
+    if (provider === 'mimo') return 60000;
+    return FANOUT_PROVIDER_TIMEOUT_MS;
+}
+
 function formatFanoutResult(label, result) {
     const divider = '═'.repeat(60);
     const elapsedSeconds = typeof result.elapsedMs === 'number' ? (result.elapsedMs / 1000).toFixed(1) : '0.0';
@@ -374,6 +380,20 @@ class AIProvider {
         } else if (lowerText === 'no response captured' || lowerText === 'no response received') {
             status = 'capture_failed';
             finalText = '';
+        } else if (lowerText.includes('service is busy') || lowerText.includes('please try again later')) {
+            status = 'error';
+            finalText = '';
+            return {
+                provider: this.name,
+                status,
+                text: finalText,
+                error: normalizedText,
+                elapsedMs,
+                timeoutMs,
+                source: meta.source || null,
+                cached: !!meta.cached,
+                phase: meta.phase || null
+            };
         }
 
         return {
@@ -479,6 +499,15 @@ class AIProvider {
 
             if (result.timedOut) {
                 return this._classifyOutcome('', new Error(result.error || 'Timeout during response capture'), {
+                    elapsedMs: Date.now() - start,
+                    timeoutMs,
+                    source: result.source || 'dom',
+                    phase: result.phase || 'response_capture'
+                });
+            }
+
+            if (result.error && (!result.response || result.response === 'No response captured' || result.response === 'No response received')) {
+                return this._classifyOutcome('', new Error(result.error), {
                     elapsedMs: Date.now() - start,
                     timeoutMs,
                     source: result.source || 'dom',
@@ -1432,21 +1461,21 @@ server.tool(
                     try {
                         return await fn();
                     } catch (e) {
-                        return { provider: name, status: 'error', error: e.message, text: '', elapsedMs: FANOUT_PROVIDER_TIMEOUT_MS, source: null, cached: false };
+                        return { provider: name, status: 'error', error: e.message, text: '', elapsedMs: getFanoutProviderTimeoutMs(name), source: null, cached: false };
                     }
                 })());
             };
 
-            if (enabled.has('perplexity')) enqueue('perplexity', () => perplexity.searchDetailed(fullMessage, { timeoutMs: FANOUT_PROVIDER_TIMEOUT_MS }));
-            if (enabled.has('chatgpt')) enqueue('chatgpt', () => chatgpt.chatDetailed(fullMessage, { timeoutMs: FANOUT_PROVIDER_TIMEOUT_MS }));
-            if (enabled.has('claude')) enqueue('claude', () => claude.chatDetailed(fullMessage, { timeoutMs: FANOUT_PROVIDER_TIMEOUT_MS }));
-            if (enabled.has('gemini')) enqueue('gemini', () => gemini.chatDetailed(fullMessage, { timeoutMs: FANOUT_PROVIDER_TIMEOUT_MS }));
-            if (enabled.has('kimi')) enqueue('kimi', () => kimi.chatDetailed(fullMessage, { timeoutMs: FANOUT_PROVIDER_TIMEOUT_MS }));
-            if (enabled.has('minimax')) enqueue('minimax', () => minimax.chatDetailed(fullMessage, { timeoutMs: FANOUT_PROVIDER_TIMEOUT_MS }));
-            if (enabled.has('mimo')) enqueue('mimo', () => mimo.chatDetailed(fullMessage, { timeoutMs: FANOUT_PROVIDER_TIMEOUT_MS }));
-            if (enabled.has('qwen')) enqueue('qwen', () => qwen.chatDetailed(fullMessage, { timeoutMs: FANOUT_PROVIDER_TIMEOUT_MS }));
-            if (enabled.has('zai')) enqueue('zai', () => zai.chatDetailed(fullMessage, { timeoutMs: FANOUT_PROVIDER_TIMEOUT_MS }));
-            if (enabled.has('deepseek')) enqueue('deepseek', () => deepseek.chatDetailed(fullMessage, { timeoutMs: FANOUT_PROVIDER_TIMEOUT_MS }));
+            if (enabled.has('perplexity')) enqueue('perplexity', () => perplexity.searchDetailed(fullMessage, { timeoutMs: getFanoutProviderTimeoutMs('perplexity') }));
+            if (enabled.has('chatgpt')) enqueue('chatgpt', () => chatgpt.chatDetailed(fullMessage, { timeoutMs: getFanoutProviderTimeoutMs('chatgpt') }));
+            if (enabled.has('claude')) enqueue('claude', () => claude.chatDetailed(fullMessage, { timeoutMs: getFanoutProviderTimeoutMs('claude') }));
+            if (enabled.has('gemini')) enqueue('gemini', () => gemini.chatDetailed(fullMessage, { timeoutMs: getFanoutProviderTimeoutMs('gemini') }));
+            if (enabled.has('kimi')) enqueue('kimi', () => kimi.chatDetailed(fullMessage, { timeoutMs: getFanoutProviderTimeoutMs('kimi') }));
+            if (enabled.has('minimax')) enqueue('minimax', () => minimax.chatDetailed(fullMessage, { timeoutMs: getFanoutProviderTimeoutMs('minimax') }));
+            if (enabled.has('mimo')) enqueue('mimo', () => mimo.chatDetailed(fullMessage, { timeoutMs: getFanoutProviderTimeoutMs('mimo') }));
+            if (enabled.has('qwen')) enqueue('qwen', () => qwen.chatDetailed(fullMessage, { timeoutMs: getFanoutProviderTimeoutMs('qwen') }));
+            if (enabled.has('zai')) enqueue('zai', () => zai.chatDetailed(fullMessage, { timeoutMs: getFanoutProviderTimeoutMs('zai') }));
+            if (enabled.has('deepseek')) enqueue('deepseek', () => deepseek.chatDetailed(fullMessage, { timeoutMs: getFanoutProviderTimeoutMs('deepseek') }));
 
             console.error('[ask_all_ais] Waiting for all providers to complete...');
             const results = await Promise.all(tasks);
@@ -1494,21 +1523,21 @@ server.tool(
                     try {
                         results[name] = await fn();
                     } catch (e) {
-                        results[name] = { provider: name, status: 'error', error: e.message, text: '', elapsedMs: FANOUT_PROVIDER_TIMEOUT_MS, source: null, cached: false };
+                        results[name] = { provider: name, status: 'error', error: e.message, text: '', elapsedMs: getFanoutProviderTimeoutMs(name), source: null, cached: false };
                     }
                 })());
             };
 
-            if (useProviders.includes('perplexity')) enqueue('perplexity', () => perplexity.searchDetailed(fullQuestion, { timeoutMs: FANOUT_PROVIDER_TIMEOUT_MS }));
-            if (useProviders.includes('chatgpt')) enqueue('chatgpt', () => chatgpt.chatDetailed(fullQuestion, { timeoutMs: FANOUT_PROVIDER_TIMEOUT_MS }));
-            if (useProviders.includes('claude')) enqueue('claude', () => claude.chatDetailed(fullQuestion, { timeoutMs: FANOUT_PROVIDER_TIMEOUT_MS }));
-            if (useProviders.includes('gemini')) enqueue('gemini', () => gemini.chatDetailed(fullQuestion, { timeoutMs: FANOUT_PROVIDER_TIMEOUT_MS }));
-            if (useProviders.includes('kimi')) enqueue('kimi', () => kimi.chatDetailed(fullQuestion, { timeoutMs: FANOUT_PROVIDER_TIMEOUT_MS }));
-            if (useProviders.includes('minimax')) enqueue('minimax', () => minimax.chatDetailed(fullQuestion, { timeoutMs: FANOUT_PROVIDER_TIMEOUT_MS }));
-            if (useProviders.includes('mimo')) enqueue('mimo', () => mimo.chatDetailed(fullQuestion, { timeoutMs: FANOUT_PROVIDER_TIMEOUT_MS }));
-            if (useProviders.includes('qwen')) enqueue('qwen', () => qwen.chatDetailed(fullQuestion, { timeoutMs: FANOUT_PROVIDER_TIMEOUT_MS }));
-            if (useProviders.includes('zai')) enqueue('zai', () => zai.chatDetailed(fullQuestion, { timeoutMs: FANOUT_PROVIDER_TIMEOUT_MS }));
-            if (useProviders.includes('deepseek')) enqueue('deepseek', () => deepseek.chatDetailed(fullQuestion, { timeoutMs: FANOUT_PROVIDER_TIMEOUT_MS }));
+            if (useProviders.includes('perplexity')) enqueue('perplexity', () => perplexity.searchDetailed(fullQuestion, { timeoutMs: getFanoutProviderTimeoutMs('perplexity') }));
+            if (useProviders.includes('chatgpt')) enqueue('chatgpt', () => chatgpt.chatDetailed(fullQuestion, { timeoutMs: getFanoutProviderTimeoutMs('chatgpt') }));
+            if (useProviders.includes('claude')) enqueue('claude', () => claude.chatDetailed(fullQuestion, { timeoutMs: getFanoutProviderTimeoutMs('claude') }));
+            if (useProviders.includes('gemini')) enqueue('gemini', () => gemini.chatDetailed(fullQuestion, { timeoutMs: getFanoutProviderTimeoutMs('gemini') }));
+            if (useProviders.includes('kimi')) enqueue('kimi', () => kimi.chatDetailed(fullQuestion, { timeoutMs: getFanoutProviderTimeoutMs('kimi') }));
+            if (useProviders.includes('minimax')) enqueue('minimax', () => minimax.chatDetailed(fullQuestion, { timeoutMs: getFanoutProviderTimeoutMs('minimax') }));
+            if (useProviders.includes('mimo')) enqueue('mimo', () => mimo.chatDetailed(fullQuestion, { timeoutMs: getFanoutProviderTimeoutMs('mimo') }));
+            if (useProviders.includes('qwen')) enqueue('qwen', () => qwen.chatDetailed(fullQuestion, { timeoutMs: getFanoutProviderTimeoutMs('qwen') }));
+            if (useProviders.includes('zai')) enqueue('zai', () => zai.chatDetailed(fullQuestion, { timeoutMs: getFanoutProviderTimeoutMs('zai') }));
+            if (useProviders.includes('deepseek')) enqueue('deepseek', () => deepseek.chatDetailed(fullQuestion, { timeoutMs: getFanoutProviderTimeoutMs('deepseek') }));
 
             await Promise.all(tasks);
 
