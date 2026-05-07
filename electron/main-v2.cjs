@@ -2724,6 +2724,7 @@ async function getResponseWithTypingStatus(provider, options = {}) {
             if (!text || text === 'No response captured') return true;
             if (/^Received\./i.test(text)) return true;
             if (/service is busy\. please try again later\.?/i.test(text)) return true;
+            if (/thinking process\b/i.test(text)) return false;
             if (text.length < 220 && /sedang memproses/i.test(text) && /(permintaan|request|terima kasih|menerima)/i.test(text)) return true;
             return false;
         };
@@ -2772,6 +2773,21 @@ async function getResponseWithTypingStatus(provider, options = {}) {
                 source: 'dom',
                 phase: 'response_capture',
                 error: 'MiMo not logged in'
+            };
+        }
+    }
+
+    if (provider === 'kimi' && (!response || response === 'No response captured')) {
+        const kimiUrl = String(webContents.getURL ? webContents.getURL() : '');
+        if (/kimi\.com\/en|kimi\.com\/zh|\/login|\/auth|log.in/i.test(kimiUrl)) {
+            return {
+                typingStarted: false,
+                typingStopped: true,
+                response: '',
+                timedOut: false,
+                source: 'dom',
+                phase: 'response_capture',
+                error: 'Kimi not logged in'
             };
         }
     }
@@ -2850,6 +2866,21 @@ function getSimpleCaptureSelectors(provider) {
         ];
     }
 
+    if (provider === 'zai') {
+        return [
+            '.chat-assistant',
+            '[class*="assistant-message"]',
+            '[class*="z-ai-assistant"]',
+            '.group .markdown-prose',
+            '.markdown-prose',
+            '[data-role="assistant"]',
+            '[data-message-author-role="assistant"]',
+            '[class*="response"]',
+            '.markdown',
+            '[class*="markdown"]'
+        ];
+    }
+
     return [
         '[data-message-author-role="assistant"]',
         '[data-testid*="assistant"]',
@@ -2895,6 +2926,32 @@ async function getSimpleProviderResponse(provider, oldFingerprint = '', options 
         }
     }
 
+    // Z.ai pre-capture: expand any collapsed "Show full message" elements
+    if (provider === 'zai') {
+        try {
+            await webContents.executeJavaScript(`
+                (async function() {
+                    const sleep = ms => new Promise(r => setTimeout(r, ms));
+                    for (let attempt = 0; attempt < 3; attempt++) {
+                        const showBtns = Array.from(document.querySelectorAll('*')).filter(el => {
+                            const text = (el.innerText || el.textContent || '').trim();
+                            return text === 'Show full message' || text.includes('Show full message');
+                        });
+                        if (!showBtns.length) break;
+                        const btn = showBtns[showBtns.length - 1];
+                        const visible = btn && (btn.offsetParent !== null || btn.getClientRects().length > 0);
+                        if (!visible) break;
+                        ['pointerdown','mousedown','pointerup','mouseup'].forEach(type =>
+                            btn.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }))
+                        );
+                        if (typeof btn.click === 'function') btn.click();
+                        await sleep(1200);
+                    }
+                })()
+            `);
+        } catch (e) { /* ignore */ }
+    }
+
     for (let i = 0; i < 50; i++) {
         if (!hasBudgetRemaining(deadlineAt, 50)) {
             return PROXIMA_BUDGET_TIMEOUT;
@@ -2909,7 +2966,10 @@ async function getSimpleProviderResponse(provider, oldFingerprint = '', options 
                     'model demo platform',
                     'citation sources',
                     'free trial',
-                    'history'
+                    'history',
+                    'show full message',
+                    'gemini berkata',
+                    'gemini said'
                 ];
 
                 function isVisible(el) {
