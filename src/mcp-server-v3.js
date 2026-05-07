@@ -350,6 +350,8 @@ class AIProvider {
                 status = 'timeout';
             } else if (lowerError.includes('not logged in') || lowerError.includes('auth') || lowerError.includes('login')) {
                 status = 'auth_required';
+            } else if (lowerError.includes('pricing') || lowerError.includes('credit') || lowerError.includes('subscription') || lowerError.includes('quota')) {
+                status = 'quota_required';
             }
 
             return {
@@ -418,6 +420,12 @@ class AIProvider {
         try {
             await this.ensureInitialized();
 
+            if (this.name === 'minimax' || this.name === 'mimo') {
+                this._requireRemaining(deadlineAt, `${this.name} preflight reset`);
+                console.error(`[${this.name}] Starting fresh conversation before request...`);
+                await this.newConversation();
+            }
+
             console.error(`[${this.name}] Checking if AI is still typing from previous request...`);
             let typingCheck = await this.getTypingStatus();
             let waitCount = 0;
@@ -436,14 +444,24 @@ class AIProvider {
                 'sendMessage'
             );
 
-            const directResponse = sendResult && sendResult.result && typeof sendResult.result.response === 'string'
-                ? sendResult.result.response.trim()
+            const sendPayload = sendResult && sendResult.result ? sendResult.result : {};
+            if (sendPayload && sendPayload.sent === false) {
+                return this._classifyOutcome('', new Error(sendPayload.error || `${this.name} send failed`), {
+                    elapsedMs: Date.now() - start,
+                    timeoutMs,
+                    source: sendPayload.source || null,
+                    phase: 'send'
+                });
+            }
+
+            const directResponse = typeof sendPayload.response === 'string'
+                ? sendPayload.response.trim()
                 : '';
             if (directResponse) {
                 return this._classifyOutcome(directResponse, null, {
                     elapsedMs: Date.now() - start,
                     timeoutMs,
-                    source: sendResult.result.source || 'api',
+                    source: sendPayload.source || 'api',
                     phase: 'send'
                 });
             }
@@ -535,7 +553,7 @@ class AIProvider {
 
     async chat(message, useCache = true) {
         const detailed = await this.chatDetailed(message, { useCache });
-        if (detailed.status === 'timeout' || detailed.status === 'error' || detailed.status === 'auth_required') {
+        if (detailed.status !== 'ok') {
             throw new Error(detailed.error || `${this.name} ${detailed.status}`);
         }
         return detailed.text || 'No response received';

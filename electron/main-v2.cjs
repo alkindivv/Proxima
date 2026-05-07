@@ -828,7 +828,11 @@ async function sendMessageToProvider(provider, message, forceDOM = false, option
     if (provider === 'mimo') {
         const loggedIn = await browserManager.isLoggedIn(provider);
         if (!loggedIn) {
-            throw new Error('MiMo not logged in');
+            const mimoUrl = String(webContents.getURL ? webContents.getURL() : '');
+            if (/account\.xiaomi\.com|\/login|\/auth/i.test(mimoUrl)) {
+                throw new Error('MiMo not logged in');
+            }
+            console.log('[mimo] Login check looked false, but current page is not an auth page, continuing...');
         }
     }
 
@@ -1961,12 +1965,18 @@ async function sendToModernProvider(webContents, provider, message) {
     if (provider === 'minimax') {
         const marker = message.substring(0, Math.min(24, message.length));
         const minimaxReady = await webContents.executeJavaScript(`
-            (function() {
-                const editor = document.querySelector('.tiptap-editor, .ProseMirror, [contenteditable="true"]');
-                if (!editor || editor.offsetParent === null) return { found: false };
-                editor.focus();
-                editor.click();
-                return { found: true, text: (editor.innerText || '').trim(), href: location.href };
+            (async function() {
+                const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+                for (let attempt = 0; attempt < 20; attempt++) {
+                    const editor = document.querySelector('.tiptap-editor, .ProseMirror, [contenteditable="true"]');
+                    if (editor && editor.offsetParent !== null) {
+                        editor.focus();
+                        editor.click();
+                        return { found: true, text: (editor.innerText || '').trim(), href: location.href, attempt };
+                    }
+                    await sleep(400);
+                }
+                return { found: false, href: location.href, title: document.title, body: (document.body?.innerText || '').slice(0, 500) };
             })()
         `).catch(() => ({ found: false }));
 
@@ -2053,7 +2063,8 @@ async function sendToModernProvider(webContents, provider, message) {
                 const afterBody = document.body?.innerText || '';
                 const afterValue = (editor.innerText || editor.textContent || '').trim();
                 const afterHref = location.href;
-                const advanced = afterHref !== beforeHref || afterValue !== marker || countMarker(afterBody) > countMarker(beforeBody);
+                const pricingBlocked = afterHref.includes('/pricing') || /choose your plan to maximize your agent's potential/i.test(afterBody);
+                const advanced = !pricingBlocked && (afterHref !== beforeHref || afterValue !== marker || countMarker(afterBody) > countMarker(beforeBody));
 
                 return {
                     sent: advanced,
@@ -2063,7 +2074,9 @@ async function sendToModernProvider(webContents, provider, message) {
                     beforeCount: countMarker(beforeBody),
                     afterCount: countMarker(afterBody),
                     remainingEditorText: afterValue,
-                    candidateClass: pick ? (pick.className || '').toString() : ''
+                    candidateClass: pick ? (pick.className || '').toString() : '',
+                    pricingBlocked,
+                    error: pricingBlocked ? 'MiniMax redirected to pricing, likely credits or subscription required' : ''
                 };
             })()
         `).catch(e => ({ sent: false, error: e.message }));
@@ -3309,7 +3322,7 @@ async function startNewConversation(provider) {
     const config = browserManager.providers[provider];
     if (config) {
         await browserManager.navigate(provider, config.url);
-        if (provider === 'mimo') {
+        if (provider === 'mimo' || provider === 'minimax') {
             await sleep(4000);
         }
     }
