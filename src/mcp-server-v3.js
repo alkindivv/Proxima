@@ -1556,6 +1556,170 @@ server.tool(
     }
 );
 
+// --- council: Multi-AI deliberation across all green providers ---
+
+server.tool(
+    'council',
+    {
+        message: z.string().describe('[REQUIRED] Question, topic, or decision to deliberate — be specific and clear. The quality of deliberation depends on how well-defined your question is.'),
+        mode: z.string().optional().describe('[OPTIONAL] Deliberation mode. Options: \"consensus\" (default) — gather perspectives and synthesize; \"debate\" — structured debate with position, challenge, and moderator synthesis; \"critique\" — critical review finding flaws, risks, and weaknesses. Default: consensus'),
+        files: z.array(z.string()).optional().describe('[OPTIONAL] File paths to include as context for deliberation (max 5 files). Supports line ranges like \"path/file.js:10-50\". Useful when deliberation involves code, documents, or data files.'),
+        context: z.string().optional().describe('[OPTIONAL] Additional context or framing for the deliberation — e.g., user role, constraints, goals, or constraints that should guide the deliberation.')
+    },
+    async ({ message, files, mode, context: ctx }) => {
+        try {
+            const enabled = getEnabledProviders();
+            const deliberationMode = mode || 'consensus';
+
+            // Auto-exclude known auth-required providers (not green)
+            const authRequired = new Set(['kimi', 'mimo']);
+            const greenProviders = [...enabled].filter(p => !authRequired.has(p));
+
+            if (greenProviders.length < 2) {
+                return toolResponse('Council requires at least 2 green providers. Current green providers: ' + greenProviders.join(', ') + '. Please re-login to Kimi and MiMo, or enable more providers.');
+            }
+
+            const providers = { perplexity, chatgpt, claude, gemini, kimi, minimax, mimo, qwen, zai, deepseek };
+            const STAGGER_MS = 2000;
+            let idx = 0;
+
+            // Build mode-specific system prompt
+            const councilInstructions = (providerName, stance) => {
+                const systemContext = ctx ? `\nADDITIONAL CONTEXT: ${ctx}` : '';
+
+                if (deliberationMode === 'debate') {
+                    return `You are participating in a structured debate. Your assigned role: ${stance}.${systemContext}
+
+TOPIC: ${message}
+
+${stance === 'first' ? `Present your INITIAL POSITION with strong arguments and evidence. Be direct and assertive.` : stance === 'challenge' ? `You are now playing devil\'s advocate. CHALLENGE the previous perspective. Find weaknesses, counter-examples, and contradictions. Be skeptical but constructive.` : `You are the MODERATOR. After hearing all sides, provide a FAIR SYNTHESIS. Acknowledge what each side got right, what they missed, and reach a nuanced conclusion.`}
+
+Keep your response focused and substantive. Do not repeat what others said — build on or challenge it.`;
+                } else if (deliberationMode === 'critique') {
+                    return `You are a CRITICAL REVIEWER. Your job is to find flaws, risks, and weaknesses.${systemContext}
+
+SUBJECT: ${message}
+
+Identify:
+1. **Logical fallacies** or weak reasoning
+2. **Hidden risks** or downsides
+3. **Assumptions** that may not hold
+4. **Evidence gaps** or missing considerations
+5. **Alternative perspectives** that contradict this
+
+Be constructively critical. Explain WHY something is problematic and suggest IMPROVEMENTS. Do not just criticize — offer better approaches.`;
+                } else {
+                    // consensus mode
+                    return `You are contributing to a group deliberation.${systemContext}
+
+QUESTION: ${message}
+
+Provide your thoughtful response considering:
+- Multiple angles and perspectives
+- Supporting evidence or reasoning
+- Potential counter-arguments (and your rebuttals)
+- Any uncertainties or open questions
+
+Be thorough but concise. Your goal is to help reach a well-rounded understanding.`;
+                }
+            };
+
+            const fullMessage = buildMessageWithFiles(message, files);
+            const results = {};
+            const tasks = [];
+
+            const staggerDelay = (ms) => new Promise(r => setTimeout(r, ms));
+
+            const enqueue = (name, fn) => {
+                const d = idx++ * STAGGER_MS;
+                tasks.push((async () => {
+                    if (d > 0) await staggerDelay(d);
+                    try {
+                        results[name] = await fn();
+                    } catch (e) {
+                        results[name] = { status: 'error', error: e.message, text: '', elapsedMs: getFanoutProviderTimeoutMs(name), source: null, cached: false };
+                    }
+                })());
+            };
+
+            // Determine stances for debate mode
+            const debateStances = ['first', 'challenge', 'moderator'];
+
+            for (const provName of greenProviders) {
+                const prov = providers[provName];
+                if (!prov) continue;
+
+                if (deliberationMode === 'debate') {
+                    const stanceIdx = greenProviders.indexOf(provName) % debateStances.length;
+                    const stance = debateStances[stanceIdx];
+                    enqueue(provName, async () => {
+                        const prompt = councilInstructions(provName, stance);
+                        return prov.chatDetailed(fullMessage + '\n\n' + prompt, { timeoutMs: getFanoutProviderTimeoutMs(provName) });
+                    });
+                } else {
+                    enqueue(provName, async () => {
+                        const prompt = councilInstructions(provName, '');
+                        return prov.chatDetailed(fullMessage + '\n\n' + prompt, { timeoutMs: getFanoutProviderTimeoutMs(provName) });
+                    });
+                }
+            }
+
+            await Promise.all(tasks);
+
+            // Format output
+            let output = '';
+            if (deliberationMode === 'debate') {
+                output = `# 🏛️ AI Council — Debate Mode\n`;
+                output += `Providers: ${greenProviders.join(', ')}\n`;
+                output += `Topic: ${message}\n\n`;
+
+                // Organize by stance
+                const stances = { first: [], challenge: [], moderator: [] };
+                for (const name of greenProviders) {
+                    const r = results[name];
+                    const stanceIdx = greenProviders.indexOf(name) % debateStances.length;
+                    const stance = debateStances[stanceIdx];
+                    const label = name.charAt(0).toUpperCase() + name.slice(1);
+                    const status = r?.status === 'ok' ? '✅' : '❌';
+                    stances[stance].push(`\n${status} **${label}**${r?.status !== 'ok' ? ' — ' + (r?.error || 'Failed') : ''}\n\n${r?.text || ''}`);
+                }
+
+                if (stances.first.length) output += '## Initial Positions\n' + stances.first.join('\n---\n') + '\n';
+                if (stances.challenge.length) output += '## Challenges & Counter-Arguments\n' + stances.challenge.join('\n---\n') + '\n';
+                if (stances.moderator.length) output += '## Moderator Synthesis\n' + stances.moderator.join('\n---\n') + '\n';
+
+            } else if (deliberationMode === 'critique') {
+                output = `# 🔍 AI Council — Critique Mode\n`;
+                output += `Providers: ${greenProviders.join(', ')}\n`;
+                output += `Subject: ${message}\n\n`;
+                output += `## Critical Reviews\n`;
+                for (const name of greenProviders) {
+                    const r = results[name];
+                    const label = name.charAt(0).toUpperCase() + name.slice(1);
+                    const status = r?.status === 'ok' ? '✅' : '❌';
+                    output += `\n${status} **${label}**${r?.status !== 'ok' ? ' — ' + (r?.error || 'Failed') : ''}\n\n${r?.text || ''}\n\n---\n`;
+                }
+            } else {
+                // consensus
+                output = `# 🤝 AI Council — Consensus Mode\n`;
+                output += `Providers: ${greenProviders.join(', ')}\n`;
+                output += `Question: ${message}\n\n`;
+                output += `## Perspectives\n`;
+                for (const name of greenProviders) {
+                    const r = results[name];
+                    const label = name.charAt(0).toUpperCase() + name.slice(1);
+                    const status = r?.status === 'ok' ? '✅' : '❌';
+                    output += `\n${status} **${label}**${r?.status !== 'ok' ? ' — ' + (r?.error || 'Failed') : ''}\n\n${r?.text || ''}\n\n---\n`;
+                }
+            }
+
+            return toolResponse(output.trim());
+        } catch (err) {
+            return toolError(err);
+        }
+    }
+);
+
 server.tool(
     'smart_query',
     {

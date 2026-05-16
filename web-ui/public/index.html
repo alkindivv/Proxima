@@ -1,0 +1,1066 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Proxima — AI Chat Hub</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+    --bg-primary: #0f0f14;
+    --bg-secondary: #1a1a22;
+    --bg-tertiary: #252530;
+    --text-primary: #e8e8f0;
+    --text-secondary: #8888a0;
+    --accent: #6c5ce7;
+    --accent-hover: #7d6ef0;
+    --success: #00d9a6;
+    --warning: #fdcb6e;
+    --error: #ff6b6b;
+    --border: #2a2a38;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    height: 100vh;
+    overflow: hidden;
+}
+
+.container {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 0 16px;
+}
+
+/* Header */
+.header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 0;
+    border-bottom: 1px solid var(--border);
+}
+
+.header h1 {
+    font-size: 24px;
+    font-weight: 700;
+    background: linear-gradient(135deg, var(--accent), var(--success));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+}
+
+.header-info {
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+/* Tabs */
+.tabs {
+    display: flex;
+    gap: 4px;
+    padding: 12px 0;
+    border-bottom: 1px solid var(--border);
+}
+
+.tab {
+    padding: 8px 20px;
+    border-radius: 8px;
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.tab:hover { background: var(--bg-secondary); color: var(--text-primary); }
+.tab.active { background: var(--accent); color: white; }
+
+/* Main content */
+.main-content {
+    flex: 1;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+}
+
+/* Chat */
+#chat-tab { display: flex; flex-direction: column; height: 100%; }
+#help-tab, #settings-tab { display: none; flex-direction: column; height: 100%; overflow-y: auto; padding: 16px 0; }
+
+.chat-messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px 0;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.message {
+    padding: 16px;
+    border-radius: 12px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+}
+
+.message.user { background: var(--bg-tertiary); border-color: var(--accent); }
+.message.ai { border-color: var(--success); }
+.message.system { background: var(--bg-tertiary); border-color: var(--warning); }
+
+.message-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+}
+
+.message-sender {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--accent);
+    text-transform: uppercase;
+}
+
+.message-time { font-size: 11px; color: var(--text-secondary); }
+
+.message-content {
+    font-size: 14px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    max-height: 400px;
+    overflow-y: auto;
+}
+
+/* Provider results */
+.provider-result {
+    margin: 12px 0;
+    padding: 12px;
+    border-radius: 8px;
+    background: var(--bg-tertiary);
+    border-left: 3px solid var(--success);
+}
+
+.provider-result.error { border-left-color: var(--error); }
+.provider-result .provider-name {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--success);
+    margin-bottom: 6px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.provider-result.error .provider-name { color: var(--error); }
+
+.provider-result .content {
+    font-size: 13px;
+    line-height: 1.5;
+    max-height: 200px;
+    overflow-y: auto;
+}
+
+/* Aggregate summary */
+.aggregate-section {
+    margin-top: 16px;
+    padding: 16px;
+    border-radius: 12px;
+    background: linear-gradient(135deg, rgba(108,92,231,0.2), rgba(0,217,166,0.1));
+    border: 1px solid var(--accent);
+}
+
+.aggregate-section h3 {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--accent);
+    margin-bottom: 8px;
+}
+
+/* Command input */
+.command-input {
+    padding: 16px 0;
+    border-top: 1px solid var(--border);
+}
+
+.input-wrapper {
+    display: flex;
+    gap: 8px;
+    align-items: flex-end;
+}
+
+#command-input {
+    flex: 1;
+    padding: 12px 16px;
+    border-radius: 12px;
+    border: 1px solid var(--border);
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    font-size: 14px;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    resize: none;
+    min-height: 48px;
+    max-height: 200px;
+}
+
+#command-input:focus { outline: none; border-color: var(--accent); }
+
+.send-btn {
+    padding: 12px 24px;
+    border-radius: 12px;
+    border: none;
+    background: var(--accent);
+    color: white;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+.send-btn:hover { background: var(--accent-hover); }
+.send-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* Slash command help */
+.slash-hint {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-top: 8px;
+}
+
+/* Help tab */
+.help-section {
+    margin-bottom: 24px;
+}
+
+.help-section h2 {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--accent);
+    margin-bottom: 12px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+}
+
+.help-cmd {
+    margin: 8px 0;
+    padding: 10px 12px;
+    border-radius: 8px;
+    background: var(--bg-secondary);
+}
+
+.help-cmd .cmd-name {
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 13px;
+    color: var(--success);
+    font-weight: 600;
+}
+
+.help-cmd .cmd-desc {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-top: 4px;
+}
+
+.help-cmd .cmd-example {
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 11px;
+    color: var(--text-secondary);
+    margin-top: 4px;
+    padding: 4px 8px;
+    background: var(--bg-tertiary);
+    border-radius: 4px;
+}
+
+/* Settings tab */
+.settings-group {
+    margin-bottom: 24px;
+}
+
+.settings-group h3 {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    margin-bottom: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.setting-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px;
+    border-radius: 8px;
+    background: var(--bg-secondary);
+    margin-bottom: 8px;
+}
+
+.setting-label { font-size: 14px; }
+
+.toggle {
+    width: 44px;
+    height: 24px;
+    border-radius: 12px;
+    background: var(--bg-tertiary);
+    border: none;
+    cursor: pointer;
+    position: relative;
+    transition: background 0.2s;
+}
+
+.toggle.active { background: var(--accent); }
+.toggle::after {
+    content: '';
+    position: absolute;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: white;
+    top: 3px;
+    left: 3px;
+    transition: transform 0.2s;
+}
+
+.toggle.active::after { transform: translateX(20px); }
+
+/* Loading */
+.loading {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px;
+    color: var(--text-secondary);
+    font-size: 13px;
+}
+
+.spinner {
+    width: 16px;
+    height: 16px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Autocomplete */
+.autocomplete {
+    position: absolute;
+    bottom: 100%;
+    left: 0;
+    right: 0;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    max-height: 200px;
+    overflow-y: auto;
+    display: none;
+    z-index: 100;
+}
+
+.autocomplete.show { display: block; }
+
+.autocomplete-item {
+    padding: 10px 12px;
+    cursor: pointer;
+    border-bottom: 1px solid var(--border);
+}
+
+.autocomplete-item:last-child { border-bottom: none; }
+.autocomplete-item:hover { background: var(--bg-tertiary); }
+.autocomplete-item .cmd { font-family: monospace; font-size: 13px; color: var(--success); }
+.autocomplete-item .desc { font-size: 11px; color: var(--text-secondary); margin-top: 2px; }
+</style>
+</head>
+<body>
+<div class="container">
+    <div class="header">
+        <h1>PROXIMA</h1>
+        <span class="header-info">AI Chat Hub • 57 Tools Available</span>
+    </div>
+
+    <div class="tabs">
+        <button class="tab active" onclick="switchTab('chat')">💬 Chat</button>
+        <button class="tab" onclick="switchTab('help')">📖 Help</button>
+        <button class="tab" onclick="switchTab('settings')">⚙️ Settings</button>
+    </div>
+
+    <div class="main-content">
+        <!-- CHAT TAB -->
+        <div id="chat-tab">
+            <div class="chat-messages" id="chat-messages">
+                <div class="message system">
+                    <div class="message-header">
+                        <span class="message-sender">System</span>
+                    </div>
+                    <div class="message-content">Welcome to Proxima AI Chat Hub! Type a command or use slash commands like:
+• <code>/council "question" --mode consensus</code> — Multi-AI deliberation
+• <code>/ask_all_ais "question"</code> — Ask all providers
+• <code>/compare "question" --providers perplexity,chatgpt</code> — Compare
+• <code>/deep_search "query"</code> — Research
+
+Type <code>/help</code> for all commands.</div>
+                </div>
+            </div>
+
+            <div class="command-input" style="position: relative;">
+                <div class="input-wrapper">
+                    <textarea id="command-input" placeholder="Type a command or message..." rows="1" onkeydown="handleKeyDown(event)" oninput="handleInput(this)"></textarea>
+                    <button class="send-btn" onclick="sendCommand()">Send</button>
+                </div>
+                <div class="slash-hint">Type <code>/</code> to see available commands</div>
+                <div class="autocomplete" id="autocomplete"></div>
+            </div>
+        </div>
+
+        <!-- HELP TAB -->
+        <div id="help-tab">
+            <div class="help-section">
+                <h2>🎯 Core AI Tools</h2>
+                
+                <div class="help-cmd">
+                    <div class="cmd-name">/council "message" --mode [consensus|debate|critique] --files [...] --context [...]</div>
+                    <div class="cmd-desc">Multi-AI deliberation across all green providers. Modes: consensus (default) = gather & synthesize; debate = structured debate with position/challenge/moderator; critique = critical review finding flaws & risks.</div>
+                    <div class="cmd-example">/council "Should I trade EURUSD or XAUUSD?" --mode debate</div>
+                </div>
+
+                <div class="help-cmd">
+                    <div class="cmd-name">/ask_all_ais "question"</div>
+                    <div class="cmd-desc">Ask all enabled AI providers the same question simultaneously.</div>
+                    <div class="cmd-example">/ask_all_ais "What is the best timeframe for scalping?"</div>
+                </div>
+
+                <div class="help-cmd">
+                    <div class="cmd-name">/compare "question" --providers [p1,p2...]</div>
+                    <div class="cmd-desc">Compare responses from specific providers. Shows individual results + aggregate.</div>
+                    <div class="cmd-example">/compare "EURUSD outlook" --providers perplexity,chatgpt,gemini</div>
+                </div>
+            </div>
+
+            <div class="help-section">
+                <h2>🔍 Research Tools</h2>
+                
+                <div class="help-cmd">
+                    <div class="cmd-name">/deep_search "query" --files [paths]</div>
+                    <div class="cmd-desc">Deep research with file context support. Includes code/documents.</div>
+                    <div class="cmd-example">/deep_search "gold price analysis 2024" --files /path/to/data.csv</div>
+                </div>
+
+                <div class="help-cmd">
+                    <div class="cmd-name">/internet_search "query"</div>
+                    <div class="cmd-desc">Search the internet for current, up-to-date information.</div>
+                    <div class="cmd-example">/internet_search "Federal Reserve interest rate decision"</div>
+                </div>
+
+                <div class="help-cmd">
+                    <div class="cmd-name">/news_search "topic" --timeframe [today|week|month]</div>
+                    <div class="cmd-desc">Search latest news on a topic.</div>
+                    <div class="cmd-example">/news_search "EURUSD" --timeframe this week</div>
+                </div>
+
+                <div class="help-cmd">
+                    <div class="cmd-name">/github_search "query" --language [lang]</div>
+                    <div class="cmd-desc">Search GitHub for repos, code examples, and libraries.</div>
+                    <div class="cmd-example">/github_search "trading bot Python" --language Python</div>
+                </div>
+
+                <div class="help-cmd">
+                    <div class="cmd-name">/reddit_search "query"</div>
+                    <div class="cmd-desc">Search Reddit discussions.</div>
+                    <div class="cmd-example">/reddit_search "scalping strategies forex"</div>
+                </div>
+            </div>
+
+            <div class="help-section">
+                <h2>💻 Code Tools</h2>
+                
+                <div class="help-cmd">
+                    <div class="cmd-name">/generate_code "description"</div>
+                    <div class="cmd-desc">Generate code in any language based on description.</div>
+                    <div class="cmd-example">/generate_code "Python script to fetch EURUSD price from API"</div>
+                </div>
+
+                <div class="help-cmd">
+                    <div class="cmd-name">/review_code "code" --context [info]</div>
+                    <div class="cmd-desc">Review code for bugs, security issues, and best practices.</div>
+                    <div class="cmd-example">/review_code "def calculate_pip(): ..." --context "forex trading function"</div>
+                </div>
+
+                <div class="help-cmd">
+                    <div class="cmd-name">/optimize_code "code"</div>
+                    <div class="cmd-desc">Optimize code for performance and efficiency.</div>
+                    <div class="cmd-example">/optimize_code "for i in range(1000): print(i)"</div>
+                </div>
+
+                <div class="help-cmd">
+                    <div class="cmd-name">/explain_code "code"</div>
+                    <div class="cmd-desc">Explain what code does in plain language.</div>
+                    <div class="cmd-example">/explain_code "import numpy as np"</div>
+                </div>
+            </div>
+
+            <div class="help-section">
+                <h2>📝 Content Tools</h2>
+                
+                <div class="help-cmd">
+                    <div class="cmd-name">/summarize_url "url" --focus [topic]</div>
+                    <div class="cmd-desc">Summarize webpage content. Use --focus to narrow scope.</div>
+                    <div class="cmd-example">/summarize_url "https://trading economics.com" --focus "EURUSD forecast"</div>
+                </div>
+
+                <div class="help-cmd">
+                    <div class="cmd-name">/generate_article "topic" --style [style]</div>
+                    <div class="cmd-desc">Write a comprehensive article on a topic.</div>
+                    <div class="cmd-example">/generate_article "Scalping strategies for beginners" --style educational</div>
+                </div>
+
+                <div class="help-cmd">
+                    <div class="cmd-name">/brainstorm "topic"</div>
+                    <div class="cmd-desc">Brainstorm creative ideas on any topic.</div>
+                    <div class="cmd-example">/brainstorm "new forex trading indicators"</div>
+                </div>
+
+                <div class="help-cmd">
+                    <div class="cmd-name">/writing_help "text" --type [essay|email|report]</div>
+                    <div class="cmd-desc">Help with writing tasks.</div>
+                    <div class="cmd-example">/writing_help "Draft an email to my broker" --type email</div>
+                </div>
+            </div>
+
+            <div class="help-section">
+                <h2>⚡ Quick Commands</h2>
+                
+                <div class="help-cmd">
+                    <div class="cmd-name">/smart_query "question"</div>
+                    <div class="cmd-desc">Ask best available provider for general questions.</div>
+                    <div class="cmd-example">/smart_query "What time does London session open?"</div>
+                </div>
+
+                <div class="help-cmd">
+                    <div class="cmd-name">/solve "problem"</div>
+                    <div class="cmd-desc">Solve complex problems with step-by-step reasoning.</div>
+                    <div class="cmd-example">/solve "Calculate position size for 2% risk on $5000 account"</div>
+                </div>
+
+                <div class="help-cmd">
+                    <div class="cmd-name">/debate "statement"</div>
+                    <div class="cmd-desc">Debate a statement — argue both sides.</div>
+                    <div class="cmd-example">/debate "Gold will reach $3000 by end of year"</div>
+                </div>
+
+                <div class="help-cmd">
+                    <div class="cmd-name">/analyze_file "path" --focus [topic]</div>
+                    <div class="cmd-desc">Analyze a file with AI context.</div>
+                    <div class="cmd-example">/analyze_file "/workspace/trading.js" --focus "logic errors"</div>
+                </div>
+            </div>
+
+            <div class="help-section">
+                <h2>🎛️ System Commands</h2>
+                
+                <div class="help-cmd">
+                    <div class="cmd-name">/new_conversation</div>
+                    <div class="cmd-desc">Start fresh conversation with all providers.</div>
+                    <div class="cmd-example">/new_conversation</div>
+                </div>
+
+                <div class="help-cmd">
+                    <div class="cmd-name">/clear_cache</div>
+                    <div class="cmd-desc">Clear cached responses.</div>
+                    <div class="cmd-example">/clear_cache</div>
+                </div>
+
+                <div class="help-cmd">
+                    <div class="cmd-name">/show_window /hide_window /toggle_window</div>
+                    <div class="cmd-desc">Control Proxima GUI window visibility.</div>
+                    <div class="cmd-example">/hide_window</div>
+                </div>
+
+                <div class="help-cmd">
+                    <div class="cmd-name">/providers</div>
+                    <div class="cmd-desc">Show enabled/disabled provider status.</div>
+                    <div class="cmd-example">/providers</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- SETTINGS TAB -->
+        <div id="settings-tab">
+            <div class="settings-group">
+                <h3>🧠 AI Providers</h3>
+                <div id="provider-toggles"></div>
+            </div>
+
+            <div class="settings-group">
+                <h3>⚡ Execution Settings</h3>
+                <div class="setting-item">
+                    <span class="setting-label">Auto-aggregate council results</span>
+                    <button class="toggle active" onclick="toggleSetting(this)"></button>
+                </div>
+                <div class="setting-item">
+                    <span class="setting-label">Show per-provider results (council/compare)</span>
+                    <button class="toggle active" onclick="toggleSetting(this)"></button>
+                </div>
+                <div class="setting-item">
+                    <span class="setting-label">Stagger provider requests (avoid rate limit)</span>
+                    <button class="toggle active" onclick="toggleSetting(this)"></button>
+                </div>
+            </div>
+
+            <div class="settings-group">
+                <h3>🎨 Display</h3>
+                <div class="setting-item">
+                    <span class="setting-label">Dark mode (current)</span>
+                    <button class="toggle active" onclick="toggleSetting(this)"></button>
+                </div>
+                <div class="setting-item">
+                    <span class="setting-label">Show timestamps</span>
+                    <button class="toggle active" onclick="toggleSetting(this)"></button>
+                </div>
+                <div class="setting-item">
+                    <span class="setting-label">Compact mode</span>
+                    <button class="toggle" onclick="toggleSetting(this)"></button>
+                </div>
+            </div>
+
+            <div class="settings-group">
+                <h3>🔧 Mining Status</h3>
+                <div class="setting-item">
+                    <span class="setting-label">Miner running (RTX PRO 6000)</span>
+                    <span id="miner-status" style="color: var(--warning);">Connecting...</span>
+                </div>
+                <div class="setting-item">
+                    <span class="setting-label">Current epoch</span>
+                    <span id="current-epoch">—</span>
+                </div>
+                <div class="setting-item">
+                    <span class="setting-label">Hash rate</span>
+                    <span id="hash-rate">—</span>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+const API_BASE = '/api';
+
+// Commands registry
+const commands = {
+    // Core
+    'council': { desc: 'Multi-AI deliberation', example: '/council "question" --mode consensus' },
+    'ask_all_ais': { desc: 'Ask all providers', example: '/ask_all_ais "question"' },
+    'compare': { desc: 'Compare specific providers', example: '/compare "q" --providers p,g,c' },
+    
+    // Research
+    'deep_search': { desc: 'Deep research', example: '/deep_search "query" --files [...]' },
+    'internet_search': { desc: 'Web search', example: '/internet_search "topic"' },
+    'news_search': { desc: 'Latest news', example: '/news_search "topic" --timeframe week' },
+    'github_search': { desc: 'GitHub repos', example: '/github_search "code" --language js' },
+    'reddit_search': { desc: 'Reddit discussions', example: '/reddit_search "topic"' },
+    'summarize_url': { desc: 'Summarize webpage', example: '/summarize_url "url"' },
+    
+    // Code
+    'generate_code': { desc: 'Generate code', example: '/generate_code "description"' },
+    'review_code': { desc: 'Review code', example: '/review_code "code"' },
+    'optimize_code': { desc: 'Optimize code', example: '/optimize_code "code"' },
+    'explain_code': { desc: 'Explain code', example: '/explain_code "code"' },
+    
+    // Content
+    'generate_article': { desc: 'Write article', example: '/generate_article "topic"' },
+    'brainstorm': { desc: 'Brainstorm ideas', example: '/brainstorm "topic"' },
+    'analyze_file': { desc: 'Analyze file', example: '/analyze_file "/path" --focus topic' },
+    'writing_help': { desc: 'Writing assistance', example: '/writing_help "text"' },
+    'fact_check': { desc: 'Fact check claims', example: '/fact_check "claim"' },
+    'find_stats': { desc: 'Find statistics', example: '/find_stats "topic"' },
+    
+    // Quick
+    'smart_query': { desc: 'Best provider answer', example: '/smart_query "question"' },
+    'solve': { desc: 'Problem solving', example: '/solve "problem description"' },
+    'debate': { desc: 'Debate statement', example: '/debate "statement"' },
+    
+    // System
+    'new_conversation': { desc: 'Start fresh', example: '/new_conversation' },
+    'clear_cache': { desc: 'Clear cached responses', example: '/clear_cache' },
+    'show_window': { desc: 'Show Proxima GUI', example: '/show_window' },
+    'hide_window': { desc: 'Hide Proxima GUI', example: '/hide_window' },
+    'toggle_window': { desc: 'Toggle window', example: '/toggle_window' },
+    'providers': { desc: 'Show provider status', example: '/providers' },
+    'help': { desc: 'Show this help', example: '/help' },
+};
+
+// State
+let chatHistory = [];
+let isLoading = false;
+
+// Switch tabs
+function switchTab(tab) {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('[id$="-tab"]').forEach(t => t.style.display = 'none');
+    document.getElementById(tab + '-tab').style.display = tab === 'chat' ? 'flex' : 'block';
+    document.querySelector(`.tab:nth-child(${tab === 'chat' ? 1 : tab === 'help' ? 2 : 3})`).classList.add('active');
+}
+
+// Autocomplete
+function handleInput(el) {
+    const text = el.value;
+    const cursorPos = el.selectionStart;
+    const textBeforeCursor = text.substring(0, cursorPos);
+    
+    // Check for / at start or after space
+    const match = textBeforeCursor.match(/(?:^|\s)\/(\w*)$/);
+    const ac = document.getElementById('autocomplete');
+    
+    if (match) {
+        const prefix = match[1].toLowerCase();
+        const matches = Object.entries(commands)
+            .filter(([cmd]) => cmd.startsWith(prefix))
+            .slice(0, 8);
+        
+        if (matches.length > 0) {
+            ac.innerHTML = matches.map(([cmd, info]) => `
+                <div class="autocomplete-item" onclick="insertCommand('${cmd}')">
+                    <div class="cmd">/${cmd}</div>
+                    <div class="desc">${info.desc}</div>
+                </div>
+            `).join('');
+            ac.classList.add('show');
+        } else {
+            ac.classList.remove('show');
+        }
+    } else {
+        ac.classList.remove('show');
+    }
+}
+
+function insertCommand(cmd) {
+    const input = document.getElementById('command-input');
+    const text = input.value;
+    const cursorPos = input.selectionStart;
+    const textBeforeCursor = text.substring(0, cursorPos);
+    const textAfterCursor = text.substring(cursorPos);
+    
+    const newTextBefore = textBeforeCursor.replace(/\/\w*$/, `/${cmd} `);
+    input.value = newTextBefore + textAfterCursor;
+    input.focus();
+    document.getElementById('autocomplete').classList.remove('show');
+}
+
+// Handle Enter
+function handleKeyDown(e) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        sendCommand();
+    }
+    if (e.key === 'Escape') {
+        document.getElementById('autocomplete').classList.remove('show');
+    }
+}
+
+// Send command
+async function sendCommand() {
+    if (isLoading) return;
+    
+    const input = document.getElementById('command-input');
+    const text = input.value.trim();
+    if (!text) return;
+    
+    // Add user message
+    addMessage('user', text);
+    input.value = '';
+    
+    // Parse command
+    const parsed = parseCommand(text);
+    addLoading();
+    
+    try {
+        const result = await executeTool(parsed.tool, parsed.args);
+        removeLoading();
+        displayResult(parsed.tool, result, parsed.args);
+    } catch (err) {
+        removeLoading();
+        addMessage('system', `Error: ${err.message}`);
+    }
+}
+
+// Parse command
+function parseCommand(text) {
+    const parts = text.match(/(?:[^\s"]+|"[^"]*")+/g) || [];
+    const cmd = parts[0]?.replace('/', '').trim() || 'unknown';
+    
+    const args = {};
+    const positional = []; // collect non-flag args as message
+    
+    for (let i = 1; i < parts.length; i++) {
+        const part = parts[i];
+        if (part.startsWith('--')) {
+            // Flag: --key=value or --key
+            const rest = part.substring(2);
+            const eqIdx = rest.indexOf('=');
+            if (eqIdx !== -1) {
+                args[rest.substring(0, eqIdx).trim()] = rest.substring(eqIdx + 1).replace(/^"|"$/g, '').trim();
+            } else {
+                // Next part is the value (unless it starts with --)
+                const next = parts[i + 1];
+                if (next && !next.startsWith('--')) {
+                    args[rest.trim()] = next.replace(/^"|"$/g, '').trim();
+                    i++; // skip next
+                } else {
+                    args[rest.trim()] = 'true';
+                }
+            }
+        } else {
+            positional.push(part.replace(/^"|"$/g, ''));
+        }
+    }
+    
+    // Message = all positional args joined (strip trailing --mode etc.)
+    if (positional.length > 0) {
+        args.message = positional.join(' ');
+    }
+    
+    return { tool: cmd, args };
+}
+
+// Execute via API
+async function executeTool(tool, args) {
+    const response = await fetch(API_BASE + '/execute', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tool, args })
+    });
+    
+    if (!response.ok) {
+        const err = await response.json();
+        throw new Error(err.error || 'Request failed');
+    }
+    
+    const data = await response.json();
+    return data.result;
+}
+
+// Add message to chat
+function addMessage(type, content, sender = '') {
+    const container = document.getElementById('chat-messages');
+    const time = new Date().toLocaleTimeString();
+    
+    const div = document.createElement('div');
+    div.className = `message ${type}`;
+    
+    const header = type !== 'system' ? `
+        <div class="message-header">
+            <span class="message-sender">${type === 'user' ? 'You' : sender || 'Proxima'}</span>
+            <span class="message-time">${time}</span>
+        </div>
+    ` : '';
+    
+    div.innerHTML = header + `<div class="message-content">${escapeHtml(content)}</div>`;
+    container.appendChild(div);
+    container.scrollTop = container.scrollHeight;
+    
+    chatHistory.push({ type, content, sender, time });
+}
+
+// Display result
+function displayResult(tool, result, args) {
+    const container = document.getElementById('chat-messages');
+    
+    // Normalize result — MCP returns { content: [{ type: "text", text: "..." }] }
+    let text = result;
+    if (typeof result === 'object' && result !== null) {
+        if (Array.isArray(result.content)) {
+            text = result.content.map(c => c.text || '').join('\n');
+        } else if (result.text) {
+            text = result.text;
+        } else {
+            text = JSON.stringify(result);
+        }
+    }
+    
+    if (tool === 'council' || tool === 'compare' || tool === 'ask_all_ais') {
+        displayMultiProviderResult(tool, text, args);
+    } else {
+        addMessage('ai', text, tool.toUpperCase());
+    }
+}
+
+// Display multi-provider result
+function displayMultiProviderResult(tool, result, args) {
+    const container = document.getElementById('chat-messages');
+    
+    // Parse markdown-style result
+    const sections = parseMarkdownResult(result);
+    
+    const div = document.createElement('div');
+    div.className = 'message ai';
+    
+    let html = `<div class="message-header">
+        <span class="message-sender">${tool.toUpperCase()}</span>
+        <span class="message-time">${new Date().toLocaleTimeString()}</span>
+    </div>`;
+    
+    // Show per-provider results
+    for (const [provider, content] of Object.entries(sections.providers || {})) {
+        const status = content.error ? 'error' : 'success';
+        html += `
+            <div class="provider-result ${status}">
+                <div class="provider-name">${status === 'success' ? '✅' : '❌'} ${provider.toUpperCase()}</div>
+                <div class="content">${escapeHtml(content.text || content.error)}</div>
+            </div>
+        `;
+    }
+    
+    // Aggregate section
+    if (sections.aggregate) {
+        html += `
+            <div class="aggregate-section">
+                <h3>📋 Aggregate Summary</h3>
+                <div class="content">${escapeHtml(sections.aggregate)}</div>
+            </div>
+        `;
+    }
+    
+    div.innerHTML = html;
+    container.appendChild(div);
+    container.scrollTop = container.scrollHeight;
+}
+
+// Parse markdown result into sections
+function parseMarkdownResult(text) {
+    if (typeof text !== 'string') { text = String(text || ''); }
+    const result = { providers: {}, aggregate: '' };
+    
+    // Split by provider headers (## PROVIDER)
+    const providerPattern = /##?\s*\*\*(.+?)\*\*|##\s+(\w+)/gi;
+    const lines = text.split('\n');
+    
+    let currentProvider = null;
+    let currentContent = [];
+    
+    for (const line of lines) {
+        const providerMatch = line.match(/##?\s*\*\*(.+?)\*\*|##\s+(\w+)/i);
+        if (providerMatch) {
+            // Save previous
+            if (currentProvider) {
+                result.providers[currentProvider] = {
+                    text: currentContent.join('\n').trim()
+                };
+            }
+            currentProvider = providerMatch[1] || providerMatch[2];
+            currentContent = [];
+        } else if (line.includes('─── AGGREGATE') || line.includes('## Aggregate') || line.includes('SYNTHESIS')) {
+            if (currentProvider) {
+                result.providers[currentProvider] = { text: currentContent.join('\n').trim() };
+                currentContent = [];
+                currentProvider = 'AGGREGATE';
+            }
+        } else {
+            currentContent.push(line);
+        }
+    }
+    
+    // Last one
+    if (currentProvider && currentContent.length) {
+        if (currentProvider === 'AGGREGATE') {
+            result.aggregate = currentContent.join('\n').trim();
+        } else {
+            result.providers[currentProvider] = { text: currentContent.join('\n').trim() };
+        }
+    }
+    
+    // If no providers found, treat as single block
+    if (Object.keys(result.providers).length === 0) {
+        result.providers['Response'] = { text: text };
+    }
+    
+    return result;
+}
+
+// Loading state
+function addLoading() {
+    isLoading = true;
+    const container = document.getElementById('chat-messages');
+    const div = document.createElement('div');
+    div.id = 'loading-indicator';
+    div.className = 'message system';
+    div.innerHTML = `
+        <div class="loading">
+            <div class="spinner"></div>
+            <span>Processing request across providers...</span>
+        </div>
+    `;
+    container.appendChild(div);
+    container.scrollTop = container.scrollHeight;
+    document.querySelector('.send-btn').disabled = true;
+}
+
+function removeLoading() {
+    isLoading = false;
+    const el = document.getElementById('loading-indicator');
+    if (el) el.remove();
+    document.querySelector('.send-btn').disabled = false;
+}
+
+// Escape HTML
+function escapeHtml(text) {
+    if (!text) return '';
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML.replace(/\n/g, '<br>');
+}
+
+// Toggle setting
+function toggleSetting(el) {
+    el.classList.toggle('active');
+}
+
+// Load settings
+async function loadSettings() {
+    try {
+        const response = await fetch(API_BASE + '/providers');
+        const data = await response.json();
+        renderProviderToggles(data.providers || []);
+    } catch (e) {
+        // Use defaults
+        renderProviderToggles([
+            'perplexity', 'chatgpt', 'gemini', 'minimax', 'qwen', 'zai', 'deepseek'
+        ]);
+    }
+}
+
+function renderProviderToggles(providers) {
+    const container = document.getElementById('provider-toggles');
+    const all = ['perplexity', 'chatgpt', 'claude', 'gemini', 'kimi', 'minimax', 'mimo', 'qwen', 'zai', 'deepseek'];
+    
+    container.innerHTML = all.map(p => `
+        <div class="setting-item">
+            <span class="setting-label">${p.charAt(0).toUpperCase() + p.slice(1)}</span>
+            <button class="toggle ${providers.includes(p) ? 'active' : ''}" 
+                    onclick="toggleProvider('${p}', this)"></button>
+        </div>
+    `).join('');
+}
+
+async function toggleProvider(name, el) {
+    el.classList.toggle('active');
+    // TODO: Send to server to update enabled providers
+}
+
+// Init
+document.addEventListener('DOMContentLoaded', () => {
+    loadSettings();
+    
+    // Auto-refresh miner status
+    // setInterval(fetchMinerStatus, 30000);
+});
+</script>
+</body>
+</html>
