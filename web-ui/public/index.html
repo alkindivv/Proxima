@@ -3,1064 +3,994 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Proxima — AI Chat Hub</title>
+<title>Proxima</title>
 <style>
-* { box-sizing: border-box; margin: 0; padding: 0; }
+/* ============================================================
+   PROXIMA — Minimal, Calm, Better
+   Design: UI/UX Pro Max principles
+   ============================================================ */
 
+/* --- Color System (Semantic Tokens) --- */
 :root {
-    --bg-primary: #0f0f14;
-    --bg-secondary: #1a1a22;
-    --bg-tertiary: #252530;
-    --text-primary: #e8e8f0;
-    --text-secondary: #8888a0;
-    --accent: #6c5ce7;
-    --accent-hover: #7d6ef0;
-    --success: #00d9a6;
-    --warning: #fdcb6e;
-    --error: #ff6b6b;
-    --border: #2a2a38;
+  --surface-0: #09090d;
+  --surface-1: #111118;
+  --surface-2: #1a1a24;
+  --surface-3: #22222e;
+  --border: #2d2d3a;
+  --text-1: #f0f0f5;
+  --text-2: #9494a8;
+  --text-3: #5c5c70;
+  --primary: #8b7cf8;
+  --primary-hover: #a695ff;
+  --accent: #4ecdc4;
+  --success: #6ee7b7;
+  --error: #f87171;
+  --warning: #fcd34d;
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --shadow-sm: 0 1px 3px rgba(0,0,0,0.4);
+  --shadow-md: 0 4px 16px rgba(0,0,0,0.5);
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'SF Mono', 'Fira Code', ui-monospace, monospace;
+}
+
+/* --- Reset & Base --- */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html {
+  font-size: 16px;
+  -webkit-text-size-adjust: 100%;
 }
 
 body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-    background: var(--bg-primary);
-    color: var(--text-primary);
-    height: 100vh;
-    overflow: hidden;
+  font-family: var(--font-sans);
+  background: var(--surface-0);
+  color: var(--text-1);
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
 }
 
-.container {
-    display: flex;
-    flex-direction: column;
-    height: 100vh;
-    max-width: 1400px;
-    margin: 0 auto;
-    padding: 0 16px;
+/* --- Focus States (Accessibility) --- */
+:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
 }
 
-/* Header */
+/* --- Layout --- */
+.app {
+  display: flex;
+  flex-direction: column;
+  min-height: 100dvh;
+  max-width: 800px;
+  margin: 0 auto;
+  width: 100%;
+  padding: 0 20px;
+}
+
+/* --- Header --- */
 .header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 16px 0;
-    border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 0;
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  background: var(--surface-0);
+  z-index: 10;
 }
 
-.header h1 {
-    font-size: 24px;
-    font-weight: 700;
-    background: linear-gradient(135deg, var(--accent), var(--success));
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
+.logo {
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.5px;
+  color: var(--text-1);
 }
 
-.header-info {
-    font-size: 12px;
-    color: var(--text-secondary);
+.logo span {
+  color: var(--primary);
 }
 
-/* Tabs */
-.tabs {
-    display: flex;
-    gap: 4px;
-    padding: 12px 0;
-    border-bottom: 1px solid var(--border);
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--success);
+  box-shadow: 0 0 6px var(--success);
+  flex-shrink: 0;
 }
 
-.tab {
-    padding: 8px 20px;
-    border-radius: 8px;
-    background: transparent;
-    border: none;
-    color: var(--text-secondary);
-    font-size: 14px;
-    font-weight: 500;
-    cursor: pointer;
-    transition: all 0.2s;
+.status-dot.loading {
+  background: var(--warning);
+  box-shadow: 0 0 6px var(--warning);
+  animation: pulse 1.2s ease-in-out infinite;
 }
 
-.tab:hover { background: var(--bg-secondary); color: var(--text-primary); }
-.tab.active { background: var(--accent); color: white; }
-
-/* Main content */
-.main-content {
-    flex: 1;
-    overflow: hidden;
-    display: flex;
-    flex-direction: column;
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
 }
 
-/* Chat */
-#chat-tab { display: flex; flex-direction: column; height: 100%; }
-#help-tab, #settings-tab { display: none; flex-direction: column; height: 100%; overflow-y: auto; padding: 16px 0; }
-
-.chat-messages {
-    flex: 1;
-    overflow-y: auto;
-    padding: 16px 0;
-    display: flex;
-    flex-direction: column;
-    gap: 16px;
+/* --- Chat Area --- */
+.chat {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  padding: 24px 0;
+  gap: 16px;
+  overflow-y: auto;
+  scroll-behavior: smooth;
 }
 
-.message {
-    padding: 16px;
-    border-radius: 12px;
-    background: var(--bg-secondary);
-    border: 1px solid var(--border);
+.chat::-webkit-scrollbar { width: 4px; }
+.chat::-webkit-scrollbar-track { background: transparent; }
+.chat::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+/* --- Message Bubbles --- */
+.msg {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  animation: msg-in 0.2s ease-out;
 }
 
-.message.user { background: var(--bg-tertiary); border-color: var(--accent); }
-.message.ai { border-color: var(--success); }
-.message.system { background: var(--bg-tertiary); border-color: var(--warning); }
-
-.message-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 8px;
+@keyframes msg-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
 
-.message-sender {
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--accent);
-    text-transform: uppercase;
+.msg.user { align-items: flex-end; }
+.msg.ai   { align-items: flex-start; }
+.msg.system { align-items: center; }
+
+.msg-bubble {
+  max-width: 85%;
+  padding: 14px 18px;
+  border-radius: var(--radius-lg);
+  font-size: 15px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
-.message-time { font-size: 11px; color: var(--text-secondary); }
-
-.message-content {
-    font-size: 14px;
-    line-height: 1.6;
-    white-space: pre-wrap;
-    max-height: 400px;
-    overflow-y: auto;
+.msg.user .msg-bubble {
+  background: var(--surface-3);
+  color: var(--text-1);
+  border-bottom-right-radius: 4px;
 }
 
-/* Provider results */
-.provider-result {
-    margin: 12px 0;
-    padding: 12px;
-    border-radius: 8px;
-    background: var(--bg-tertiary);
-    border-left: 3px solid var(--success);
+.msg.ai .msg-bubble {
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-bottom-left-radius: 4px;
 }
 
-.provider-result.error { border-left-color: var(--error); }
-.provider-result .provider-name {
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--success);
-    margin-bottom: 6px;
-    display: flex;
-    align-items: center;
-    gap: 6px;
+.msg.system .msg-bubble {
+  background: transparent;
+  border: 1px dashed var(--border);
+  color: var(--text-3);
+  font-size: 13px;
+  padding: 10px 16px;
 }
 
-.provider-result.error .provider-name { color: var(--error); }
-
-.provider-result .content {
-    font-size: 13px;
-    line-height: 1.5;
-    max-height: 200px;
-    overflow-y: auto;
+/* --- Provider Cards --- */
+.provider-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
 }
 
-/* Aggregate summary */
-.aggregate-section {
-    margin-top: 16px;
-    padding: 16px;
-    border-radius: 12px;
-    background: linear-gradient(135deg, rgba(108,92,231,0.2), rgba(0,217,166,0.1));
-    border: 1px solid var(--accent);
+.provider-card {
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  transition: border-color 0.15s;
 }
 
-.aggregate-section h3 {
-    font-size: 14px;
-    font-weight: 600;
-    color: var(--accent);
-    margin-bottom: 8px;
+.provider-card.error { border-color: rgba(248,113,113,0.3); }
+
+.provider-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  min-height: 44px;
+  user-select: none;
 }
 
-/* Command input */
-.command-input {
-    padding: 16px 0;
-    border-top: 1px solid var(--border);
+.provider-card-header:hover { background: var(--surface-2); }
+
+.provider-name {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--text-2);
 }
 
-.input-wrapper {
-    display: flex;
-    gap: 8px;
-    align-items: flex-end;
+.provider-status {
+  font-size: 11px;
+  color: var(--success);
 }
 
-#command-input {
-    flex: 1;
-    padding: 12px 16px;
-    border-radius: 12px;
-    border: 1px solid var(--border);
-    background: var(--bg-secondary);
-    color: var(--text-primary);
-    font-size: 14px;
-    font-family: 'SF Mono', 'Fira Code', monospace;
-    resize: none;
-    min-height: 48px;
-    max-height: 200px;
+.provider-card.error .provider-status { color: var(--error); }
+
+.provider-toggle {
+  color: var(--text-3);
+  font-size: 12px;
+  transition: transform 0.2s;
 }
 
-#command-input:focus { outline: none; border-color: var(--accent); }
+.provider-card.open .provider-toggle { transform: rotate(180deg); }
+
+.provider-card-body {
+  display: none;
+  padding: 14px;
+  font-size: 14px;
+  line-height: 1.65;
+  color: var(--text-1);
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.provider-card.open .provider-card-body { display: block; }
+
+.provider-card-body::-webkit-scrollbar { width: 3px; }
+.provider-card-body::-webkit-scrollbar-track { background: transparent; }
+.provider-card-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+/* --- Aggregate Summary --- */
+.aggregate {
+  background: linear-gradient(135deg, rgba(139,124,248,0.12), rgba(78,205,196,0.08));
+  border: 1px solid rgba(139,124,248,0.25);
+  border-radius: var(--radius-md);
+  padding: 16px 18px;
+  margin-top: 4px;
+}
+
+.aggregate-title {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color: var(--primary);
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.aggregate-title::before {
+  content: '';
+  display: inline-block;
+  width: 16px;
+  height: 2px;
+  background: var(--primary);
+  border-radius: 1px;
+}
+
+.aggregate-content {
+  font-size: 14px;
+  line-height: 1.65;
+  color: var(--text-1);
+}
+
+/* --- Input Area --- */
+.input-area {
+  padding: 16px 0 24px;
+  border-top: 1px solid var(--border);
+  position: sticky;
+  bottom: 0;
+  background: var(--surface-0);
+}
+
+.input-row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-end;
+}
+
+#msg-input {
+  flex: 1;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 13px 16px;
+  font-size: 15px;
+  font-family: var(--font-sans);
+  color: var(--text-1);
+  resize: none;
+  min-height: 48px;
+  max-height: 160px;
+  line-height: 1.5;
+  transition: border-color 0.15s, box-shadow 0.15s;
+  field-sizing: content;
+}
+
+#msg-input::placeholder { color: var(--text-3); }
+
+#msg-input:focus {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(139,124,248,0.15);
+}
 
 .send-btn {
-    padding: 12px 24px;
-    border-radius: 12px;
-    border: none;
-    background: var(--accent);
-    color: white;
-    font-size: 14px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: background 0.2s;
+  height: 48px;
+  padding: 0 22px;
+  background: var(--primary);
+  color: #fff;
+  border: none;
+  border-radius: var(--radius-lg);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, transform 0.1s;
+  flex-shrink: 0;
 }
 
-.send-btn:hover { background: var(--accent-hover); }
-.send-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.send-btn:hover { background: var(--primary-hover); }
+.send-btn:active { transform: scale(0.97); }
+.send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.send-btn:disabled:active { transform: none; }
 
-/* Slash command help */
-.slash-hint {
-    font-size: 12px;
-    color: var(--text-secondary);
-    margin-top: 8px;
+/* --- Autocomplete --- */
+.auto-box {
+  position: relative;
 }
 
-/* Help tab */
-.help-section {
-    margin-bottom: 24px;
+.auto-list {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  display: none;
+  z-index: 50;
+  box-shadow: var(--shadow-md);
 }
 
-.help-section h2 {
-    font-size: 16px;
-    font-weight: 600;
-    color: var(--accent);
-    margin-bottom: 12px;
-    padding-bottom: 8px;
-    border-bottom: 1px solid var(--border);
+.auto-list.show { display: block; }
+
+.auto-item {
+  padding: 10px 14px;
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  min-height: 44px;
+  transition: background 0.1s;
 }
 
-.help-cmd {
-    margin: 8px 0;
-    padding: 10px 12px;
-    border-radius: 8px;
-    background: var(--bg-secondary);
+.auto-item:hover, .auto-item.active { background: var(--surface-3); }
+
+.auto-item .cmd {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--accent);
 }
 
-.help-cmd .cmd-name {
-    font-family: 'SF Mono', 'Fira Code', monospace;
-    font-size: 13px;
-    color: var(--success);
-    font-weight: 600;
+.auto-item .desc {
+  font-size: 12px;
+  color: var(--text-3);
 }
 
-.help-cmd .cmd-desc {
-    font-size: 12px;
-    color: var(--text-secondary);
-    margin-top: 4px;
+/* --- Hint --- */
+.hint {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--text-3);
 }
 
-.help-cmd .cmd-example {
-    font-family: 'SF Mono', 'Fira Code', monospace;
-    font-size: 11px;
-    color: var(--text-secondary);
-    margin-top: 4px;
-    padding: 4px 8px;
-    background: var(--bg-tertiary);
-    border-radius: 4px;
+.hint kbd {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
 }
 
-/* Settings tab */
-.settings-group {
-    margin-bottom: 24px;
+/* --- Nav Icons (top-right) --- */
+.nav-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-2);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
 }
 
-.settings-group h3 {
-    font-size: 14px;
-    font-weight: 600;
-    color: var(--text-secondary);
-    margin-bottom: 12px;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
+.nav-icon:hover {
+  background: var(--surface-2);
+  color: var(--text-1);
+  border-color: var(--border);
 }
 
-.setting-item {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 12px;
-    border-radius: 8px;
-    background: var(--bg-secondary);
-    margin-bottom: 8px;
+/* --- Help Panel (slide-in overlay) --- */
+.panel-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.6);
+  backdrop-filter: blur(4px);
+  z-index: 100;
+  display: none;
+  align-items: flex-start;
+  justify-content: flex-end;
 }
 
-.setting-label { font-size: 14px; }
+.panel-overlay.show { display: flex; }
 
-.toggle {
-    width: 44px;
-    height: 24px;
-    border-radius: 12px;
-    background: var(--bg-tertiary);
-    border: none;
-    cursor: pointer;
-    position: relative;
-    transition: background 0.2s;
+.panel {
+  width: 360px;
+  max-width: 90vw;
+  height: 100dvh;
+  background: var(--surface-1);
+  border-left: 1px solid var(--border);
+  overflow-y: auto;
+  padding: 24px;
+  animation: slide-in 0.25s ease-out;
 }
 
-.toggle.active { background: var(--accent); }
-.toggle::after {
-    content: '';
-    position: absolute;
-    width: 18px;
-    height: 18px;
-    border-radius: 50%;
-    background: white;
-    top: 3px;
-    left: 3px;
-    transition: transform 0.2s;
+@keyframes slide-in {
+  from { transform: translateX(20px); opacity: 0; }
+  to   { transform: translateX(0); opacity: 1; }
 }
 
-.toggle.active::after { transform: translateX(20px); }
+.panel::-webkit-scrollbar { width: 4px; }
+.panel::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
 
-/* Loading */
-.loading {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 12px;
-    color: var(--text-secondary);
-    font-size: 13px;
+.panel h2 {
+  font-size: 18px;
+  font-weight: 700;
+  margin-bottom: 20px;
+  color: var(--text-1);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.panel h3 {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--text-3);
+  margin: 20px 0 10px;
+}
+
+.panel-cmd {
+  margin-bottom: 8px;
+}
+
+.panel-cmd code {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--accent);
+  display: block;
+  margin-bottom: 3px;
+}
+
+.panel-cmd span {
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.panel-close {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-2);
+  cursor: pointer;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  transition: background 0.15s;
+}
+
+.panel-close:hover { background: var(--surface-3); color: var(--text-1); }
+
+/* --- Loading --- */
+.loading-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 0;
+  color: var(--text-2);
+  font-size: 13px;
 }
 
 .spinner {
-    width: 16px;
-    height: 16px;
-    border: 2px solid var(--border);
-    border-top-color: var(--accent);
-    border-radius: 50%;
-    animation: spin 0.8s linear infinite;
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--border);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
 }
 
 @keyframes spin { to { transform: rotate(360deg); } }
 
-/* Autocomplete */
-.autocomplete {
-    position: absolute;
-    bottom: 100%;
-    left: 0;
-    right: 0;
-    background: var(--bg-secondary);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    max-height: 200px;
-    overflow-y: auto;
-    display: none;
-    z-index: 100;
+/* --- Responsive --- */
+@media (max-width: 600px) {
+  .app { padding: 0 14px; }
+  .msg-bubble { max-width: 92%; font-size: 14px; }
+  .header { padding: 14px 0; }
+  .send-btn { padding: 0 16px; }
 }
-
-.autocomplete.show { display: block; }
-
-.autocomplete-item {
-    padding: 10px 12px;
-    cursor: pointer;
-    border-bottom: 1px solid var(--border);
-}
-
-.autocomplete-item:last-child { border-bottom: none; }
-.autocomplete-item:hover { background: var(--bg-tertiary); }
-.autocomplete-item .cmd { font-family: monospace; font-size: 13px; color: var(--success); }
-.autocomplete-item .desc { font-size: 11px; color: var(--text-secondary); margin-top: 2px; }
 </style>
 </head>
 <body>
-<div class="container">
-    <div class="header">
-        <h1>PROXIMA</h1>
-        <span class="header-info">AI Chat Hub • 57 Tools Available</span>
+<div class="app">
+  <!-- Header -->
+  <header class="header">
+    <div class="logo">Proxima<span>.</span></div>
+    <div style="display:flex;align-items:center;gap:8px;">
+      <div id="status-dot" class="status-dot" title="Connected to Proxima MCP"></div>
+      <button class="nav-icon" onclick="toggleHelp()" aria-label="Help">?</button>
     </div>
+  </header>
 
-    <div class="tabs">
-        <button class="tab active" onclick="switchTab('chat')">💬 Chat</button>
-        <button class="tab" onclick="switchTab('help')">📖 Help</button>
-        <button class="tab" onclick="switchTab('settings')">⚙️ Settings</button>
+  <!-- Chat Messages -->
+  <main class="chat" id="chat" role="log" aria-live="polite">
+    <div class="msg system">
+      <div class="msg-bubble">Type a message or use a slash command like /council, /compare, /ask_all_ais</div>
     </div>
+  </main>
 
-    <div class="main-content">
-        <!-- CHAT TAB -->
-        <div id="chat-tab">
-            <div class="chat-messages" id="chat-messages">
-                <div class="message system">
-                    <div class="message-header">
-                        <span class="message-sender">System</span>
-                    </div>
-                    <div class="message-content">Welcome to Proxima AI Chat Hub! Type a command or use slash commands like:
-• <code>/council "question" --mode consensus</code> — Multi-AI deliberation
-• <code>/ask_all_ais "question"</code> — Ask all providers
-• <code>/compare "question" --providers perplexity,chatgpt</code> — Compare
-• <code>/deep_search "query"</code> — Research
-
-Type <code>/help</code> for all commands.</div>
-                </div>
-            </div>
-
-            <div class="command-input" style="position: relative;">
-                <div class="input-wrapper">
-                    <textarea id="command-input" placeholder="Type a command or message..." rows="1" onkeydown="handleKeyDown(event)" oninput="handleInput(this)"></textarea>
-                    <button class="send-btn" onclick="sendCommand()">Send</button>
-                </div>
-                <div class="slash-hint">Type <code>/</code> to see available commands</div>
-                <div class="autocomplete" id="autocomplete"></div>
-            </div>
-        </div>
-
-        <!-- HELP TAB -->
-        <div id="help-tab">
-            <div class="help-section">
-                <h2>🎯 Core AI Tools</h2>
-                
-                <div class="help-cmd">
-                    <div class="cmd-name">/council "message" --mode [consensus|debate|critique] --files [...] --context [...]</div>
-                    <div class="cmd-desc">Multi-AI deliberation across all green providers. Modes: consensus (default) = gather & synthesize; debate = structured debate with position/challenge/moderator; critique = critical review finding flaws & risks.</div>
-                    <div class="cmd-example">/council "Should I trade EURUSD or XAUUSD?" --mode debate</div>
-                </div>
-
-                <div class="help-cmd">
-                    <div class="cmd-name">/ask_all_ais "question"</div>
-                    <div class="cmd-desc">Ask all enabled AI providers the same question simultaneously.</div>
-                    <div class="cmd-example">/ask_all_ais "What is the best timeframe for scalping?"</div>
-                </div>
-
-                <div class="help-cmd">
-                    <div class="cmd-name">/compare "question" --providers [p1,p2...]</div>
-                    <div class="cmd-desc">Compare responses from specific providers. Shows individual results + aggregate.</div>
-                    <div class="cmd-example">/compare "EURUSD outlook" --providers perplexity,chatgpt,gemini</div>
-                </div>
-            </div>
-
-            <div class="help-section">
-                <h2>🔍 Research Tools</h2>
-                
-                <div class="help-cmd">
-                    <div class="cmd-name">/deep_search "query" --files [paths]</div>
-                    <div class="cmd-desc">Deep research with file context support. Includes code/documents.</div>
-                    <div class="cmd-example">/deep_search "gold price analysis 2024" --files /path/to/data.csv</div>
-                </div>
-
-                <div class="help-cmd">
-                    <div class="cmd-name">/internet_search "query"</div>
-                    <div class="cmd-desc">Search the internet for current, up-to-date information.</div>
-                    <div class="cmd-example">/internet_search "Federal Reserve interest rate decision"</div>
-                </div>
-
-                <div class="help-cmd">
-                    <div class="cmd-name">/news_search "topic" --timeframe [today|week|month]</div>
-                    <div class="cmd-desc">Search latest news on a topic.</div>
-                    <div class="cmd-example">/news_search "EURUSD" --timeframe this week</div>
-                </div>
-
-                <div class="help-cmd">
-                    <div class="cmd-name">/github_search "query" --language [lang]</div>
-                    <div class="cmd-desc">Search GitHub for repos, code examples, and libraries.</div>
-                    <div class="cmd-example">/github_search "trading bot Python" --language Python</div>
-                </div>
-
-                <div class="help-cmd">
-                    <div class="cmd-name">/reddit_search "query"</div>
-                    <div class="cmd-desc">Search Reddit discussions.</div>
-                    <div class="cmd-example">/reddit_search "scalping strategies forex"</div>
-                </div>
-            </div>
-
-            <div class="help-section">
-                <h2>💻 Code Tools</h2>
-                
-                <div class="help-cmd">
-                    <div class="cmd-name">/generate_code "description"</div>
-                    <div class="cmd-desc">Generate code in any language based on description.</div>
-                    <div class="cmd-example">/generate_code "Python script to fetch EURUSD price from API"</div>
-                </div>
-
-                <div class="help-cmd">
-                    <div class="cmd-name">/review_code "code" --context [info]</div>
-                    <div class="cmd-desc">Review code for bugs, security issues, and best practices.</div>
-                    <div class="cmd-example">/review_code "def calculate_pip(): ..." --context "forex trading function"</div>
-                </div>
-
-                <div class="help-cmd">
-                    <div class="cmd-name">/optimize_code "code"</div>
-                    <div class="cmd-desc">Optimize code for performance and efficiency.</div>
-                    <div class="cmd-example">/optimize_code "for i in range(1000): print(i)"</div>
-                </div>
-
-                <div class="help-cmd">
-                    <div class="cmd-name">/explain_code "code"</div>
-                    <div class="cmd-desc">Explain what code does in plain language.</div>
-                    <div class="cmd-example">/explain_code "import numpy as np"</div>
-                </div>
-            </div>
-
-            <div class="help-section">
-                <h2>📝 Content Tools</h2>
-                
-                <div class="help-cmd">
-                    <div class="cmd-name">/summarize_url "url" --focus [topic]</div>
-                    <div class="cmd-desc">Summarize webpage content. Use --focus to narrow scope.</div>
-                    <div class="cmd-example">/summarize_url "https://trading economics.com" --focus "EURUSD forecast"</div>
-                </div>
-
-                <div class="help-cmd">
-                    <div class="cmd-name">/generate_article "topic" --style [style]</div>
-                    <div class="cmd-desc">Write a comprehensive article on a topic.</div>
-                    <div class="cmd-example">/generate_article "Scalping strategies for beginners" --style educational</div>
-                </div>
-
-                <div class="help-cmd">
-                    <div class="cmd-name">/brainstorm "topic"</div>
-                    <div class="cmd-desc">Brainstorm creative ideas on any topic.</div>
-                    <div class="cmd-example">/brainstorm "new forex trading indicators"</div>
-                </div>
-
-                <div class="help-cmd">
-                    <div class="cmd-name">/writing_help "text" --type [essay|email|report]</div>
-                    <div class="cmd-desc">Help with writing tasks.</div>
-                    <div class="cmd-example">/writing_help "Draft an email to my broker" --type email</div>
-                </div>
-            </div>
-
-            <div class="help-section">
-                <h2>⚡ Quick Commands</h2>
-                
-                <div class="help-cmd">
-                    <div class="cmd-name">/smart_query "question"</div>
-                    <div class="cmd-desc">Ask best available provider for general questions.</div>
-                    <div class="cmd-example">/smart_query "What time does London session open?"</div>
-                </div>
-
-                <div class="help-cmd">
-                    <div class="cmd-name">/solve "problem"</div>
-                    <div class="cmd-desc">Solve complex problems with step-by-step reasoning.</div>
-                    <div class="cmd-example">/solve "Calculate position size for 2% risk on $5000 account"</div>
-                </div>
-
-                <div class="help-cmd">
-                    <div class="cmd-name">/debate "statement"</div>
-                    <div class="cmd-desc">Debate a statement — argue both sides.</div>
-                    <div class="cmd-example">/debate "Gold will reach $3000 by end of year"</div>
-                </div>
-
-                <div class="help-cmd">
-                    <div class="cmd-name">/analyze_file "path" --focus [topic]</div>
-                    <div class="cmd-desc">Analyze a file with AI context.</div>
-                    <div class="cmd-example">/analyze_file "/workspace/trading.js" --focus "logic errors"</div>
-                </div>
-            </div>
-
-            <div class="help-section">
-                <h2>🎛️ System Commands</h2>
-                
-                <div class="help-cmd">
-                    <div class="cmd-name">/new_conversation</div>
-                    <div class="cmd-desc">Start fresh conversation with all providers.</div>
-                    <div class="cmd-example">/new_conversation</div>
-                </div>
-
-                <div class="help-cmd">
-                    <div class="cmd-name">/clear_cache</div>
-                    <div class="cmd-desc">Clear cached responses.</div>
-                    <div class="cmd-example">/clear_cache</div>
-                </div>
-
-                <div class="help-cmd">
-                    <div class="cmd-name">/show_window /hide_window /toggle_window</div>
-                    <div class="cmd-desc">Control Proxima GUI window visibility.</div>
-                    <div class="cmd-example">/hide_window</div>
-                </div>
-
-                <div class="help-cmd">
-                    <div class="cmd-name">/providers</div>
-                    <div class="cmd-desc">Show enabled/disabled provider status.</div>
-                    <div class="cmd-example">/providers</div>
-                </div>
-            </div>
-        </div>
-
-        <!-- SETTINGS TAB -->
-        <div id="settings-tab">
-            <div class="settings-group">
-                <h3>🧠 AI Providers</h3>
-                <div id="provider-toggles"></div>
-            </div>
-
-            <div class="settings-group">
-                <h3>⚡ Execution Settings</h3>
-                <div class="setting-item">
-                    <span class="setting-label">Auto-aggregate council results</span>
-                    <button class="toggle active" onclick="toggleSetting(this)"></button>
-                </div>
-                <div class="setting-item">
-                    <span class="setting-label">Show per-provider results (council/compare)</span>
-                    <button class="toggle active" onclick="toggleSetting(this)"></button>
-                </div>
-                <div class="setting-item">
-                    <span class="setting-label">Stagger provider requests (avoid rate limit)</span>
-                    <button class="toggle active" onclick="toggleSetting(this)"></button>
-                </div>
-            </div>
-
-            <div class="settings-group">
-                <h3>🎨 Display</h3>
-                <div class="setting-item">
-                    <span class="setting-label">Dark mode (current)</span>
-                    <button class="toggle active" onclick="toggleSetting(this)"></button>
-                </div>
-                <div class="setting-item">
-                    <span class="setting-label">Show timestamps</span>
-                    <button class="toggle active" onclick="toggleSetting(this)"></button>
-                </div>
-                <div class="setting-item">
-                    <span class="setting-label">Compact mode</span>
-                    <button class="toggle" onclick="toggleSetting(this)"></button>
-                </div>
-            </div>
-
-            <div class="settings-group">
-                <h3>🔧 Mining Status</h3>
-                <div class="setting-item">
-                    <span class="setting-label">Miner running (RTX PRO 6000)</span>
-                    <span id="miner-status" style="color: var(--warning);">Connecting...</span>
-                </div>
-                <div class="setting-item">
-                    <span class="setting-label">Current epoch</span>
-                    <span id="current-epoch">—</span>
-                </div>
-                <div class="setting-item">
-                    <span class="setting-label">Hash rate</span>
-                    <span id="hash-rate">—</span>
-                </div>
-            </div>
-        </div>
+  <!-- Input -->
+  <div class="input-area">
+    <div class="auto-box">
+      <div class="input-row">
+        <textarea
+          id="msg-input"
+          placeholder="Ask anything..."
+          rows="1"
+          aria-label="Message input"
+          onkeydown="handleKey(event)"
+          oninput="handleInput(this)"
+        ></textarea>
+        <button class="send-btn" id="send-btn" onclick="send()" aria-label="Send message">Send</button>
+      </div>
+      <div class="auto-list" id="auto-list" role="listbox" aria-label="Command suggestions"></div>
     </div>
+    <div class="hint">Press <kbd>Enter</kbd> to send · <kbd>/</kbd> for commands · <kbd>↑</kbd> to recall</div>
+  </div>
+</div>
+
+<!-- Help Panel -->
+<div class="panel-overlay" id="help-panel" aria-hidden="true">
+  <div class="panel" role="dialog" aria-label="Help panel">
+    <h2>
+      Commands
+      <button class="panel-close" onclick="toggleHelp()" aria-label="Close help">×</button>
+    </h2>
+
+    <h3>🤖 AI Council</h3>
+    <div class="panel-cmd"><code>/council "question"</code><span>Deliberate across all AIs</span></div>
+    <div class="panel-cmd"><code>/compare item1 | item2</code><span>Compare two things</span></div>
+    <div class="panel-cmd"><code>/ask_all_ais "question"</code><span>Ask all providers at once</span></div>
+
+    <h3>🔍 Research</h3>
+    <div class="panel-cmd"><code>/internet_search "query"</code><span>Search the web</span></div>
+    <div class="panel-cmd"><code>/deep_search "query"</code><span>Deep research with AI</span></div>
+    <div class="panel-cmd"><code>/news_search "topic"</code><span>Latest news</span></div>
+    <div class="panel-cmd"><code>/summarize_url "url"</code><span>Summarize a webpage</span></div>
+    <div class="panel-cmd"><code>/reddit_search "query"</code><span>Search Reddit</span></div>
+    <div class="panel-cmd"><code>/github_search "query"</code><span>Search GitHub repos</span></div>
+
+    <h3>💻 Code</h3>
+    <div class="panel-cmd"><code>/generate_code "description"</code><span>Generate code</span></div>
+    <div class="panel-cmd"><code>/review_code "code"</code><span>Review code for bugs</span></div>
+    <div class="panel-cmd"><code>/optimize_code "code"</code><span>Optimize performance</span></div>
+    <div class="panel-cmd"><code>/explain_code "code"</code><span>Explain what code does</span></div>
+
+    <h3>📝 Content</h3>
+    <div class="panel-cmd"><code>/brainstorm "topic"</code><span>Brainstorm ideas</span></div>
+    <div class="panel-cmd"><code>/generate_article "topic"</code><span>Write an article</span></div>
+    <div class="panel-cmd"><code>/summarize_url "url"</code><span>Summarize webpage</span></div>
+
+    <h3>⚡ Quick</h3>
+    <div class="panel-cmd"><code>/smart_query "question"</code><span>Best provider answer</span></div>
+    <div class="panel-cmd"><code>/solve "problem"</code><span>Problem solving</span></div>
+    <div class="panel-cmd"><code>/debate "statement"</code><span>Debate both sides</span></div>
+    <div class="panel-cmd"><code>/analyze_file "/path"</code><span>Analyze a file</span></div>
+  </div>
 </div>
 
 <script>
-const API_BASE = '/api';
-
-// Commands registry
-const commands = {
-    // Core
-    'council': { desc: 'Multi-AI deliberation', example: '/council "question" --mode consensus' },
-    'ask_all_ais': { desc: 'Ask all providers', example: '/ask_all_ais "question"' },
-    'compare': { desc: 'Compare specific providers', example: '/compare "q" --providers p,g,c' },
-    
-    // Research
-    'deep_search': { desc: 'Deep research', example: '/deep_search "query" --files [...]' },
-    'internet_search': { desc: 'Web search', example: '/internet_search "topic"' },
-    'news_search': { desc: 'Latest news', example: '/news_search "topic" --timeframe week' },
-    'github_search': { desc: 'GitHub repos', example: '/github_search "code" --language js' },
-    'reddit_search': { desc: 'Reddit discussions', example: '/reddit_search "topic"' },
-    'summarize_url': { desc: 'Summarize webpage', example: '/summarize_url "url"' },
-    
-    // Code
-    'generate_code': { desc: 'Generate code', example: '/generate_code "description"' },
-    'review_code': { desc: 'Review code', example: '/review_code "code"' },
-    'optimize_code': { desc: 'Optimize code', example: '/optimize_code "code"' },
-    'explain_code': { desc: 'Explain code', example: '/explain_code "code"' },
-    
-    // Content
-    'generate_article': { desc: 'Write article', example: '/generate_article "topic"' },
-    'brainstorm': { desc: 'Brainstorm ideas', example: '/brainstorm "topic"' },
-    'analyze_file': { desc: 'Analyze file', example: '/analyze_file "/path" --focus topic' },
-    'writing_help': { desc: 'Writing assistance', example: '/writing_help "text"' },
-    'fact_check': { desc: 'Fact check claims', example: '/fact_check "claim"' },
-    'find_stats': { desc: 'Find statistics', example: '/find_stats "topic"' },
-    
-    // Quick
-    'smart_query': { desc: 'Best provider answer', example: '/smart_query "question"' },
-    'solve': { desc: 'Problem solving', example: '/solve "problem description"' },
-    'debate': { desc: 'Debate statement', example: '/debate "statement"' },
-    
-    // System
-    'new_conversation': { desc: 'Start fresh', example: '/new_conversation' },
-    'clear_cache': { desc: 'Clear cached responses', example: '/clear_cache' },
-    'show_window': { desc: 'Show Proxima GUI', example: '/show_window' },
-    'hide_window': { desc: 'Hide Proxima GUI', example: '/hide_window' },
-    'toggle_window': { desc: 'Toggle window', example: '/toggle_window' },
-    'providers': { desc: 'Show provider status', example: '/providers' },
-    'help': { desc: 'Show this help', example: '/help' },
+const API = '/api/execute';
+const PARAM_MAP = {
+  brainstorm:'topic', generate_article:'topic', fact_check:'topic', find_stats:'topic',
+  debate:'topic', generate_code:'description', optimize_code:'code', review_code:'code',
+  explain_code:'code', writing_help:'text', compare:'item1', verify:'question', solve:'problem',
+  how_to:'question', analyze_document:'question', analyze_file:'question',
+  explain_error:'error_message', fix_error:'code', convert_code:'code',
+  ask_selected:'question', get_ui_reference:'description', analyze_code_file:'question',
 };
 
-// State
-let chatHistory = [];
-let isLoading = false;
+const CMDS = [
+  { c:'council', d:'Multi-AI deliberation', e:'/council "question"' },
+  { c:'ask_all_ais', d:'Ask all providers', e:'/ask_all_ais "question"' },
+  { c:'compare', d:'Compare two things', e:'/compare item1 | item2' },
+  { c:'deep_search', d:'Deep research', e:'/deep_search "query"' },
+  { c:'internet_search', d:'Search the web', e:'/internet_search "query"' },
+  { c:'news_search', d:'Latest news', e:'/news_search "topic"' },
+  { c:'summarize_url', d:'Summarize webpage', e:'/summarize_url "url"' },
+  { c:'reddit_search', d:'Search Reddit', e:'/reddit_search "query"' },
+  { c:'github_search', d:'Search GitHub', e:'/github_search "query"' },
+  { c:'generate_code', d:'Generate code', e:'/generate_code "description"' },
+  { c:'review_code', d:'Review code', e:'/review_code "code"' },
+  { c:'optimize_code', d:'Optimize code', e:'/optimize_code "code"' },
+  { c:'explain_code', d:'Explain code', e:'/explain_code "code"' },
+  { c:'brainstorm', d:'Brainstorm ideas', e:'/brainstorm "topic"' },
+  { c:'generate_article', d:'Write article', e:'/generate_article "topic"' },
+  { c:'smart_query', d:'Quick answer', e:'/smart_query "question"' },
+  { c:'solve', d:'Problem solving', e:'/solve "problem"' },
+  { c:'debate', d:'Debate statement', e:'/debate "statement"' },
+  { c:'analyze_file', d:'Analyze file', e:'/analyze_file "/path"' },
+  { c:'help', d:'Show this help', e:'/help' },
+];
 
-// Switch tabs
-function switchTab(tab) {
-    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-    document.querySelectorAll('[id$="-tab"]').forEach(t => t.style.display = 'none');
-    document.getElementById(tab + '-tab').style.display = tab === 'chat' ? 'flex' : 'block';
-    document.querySelector(`.tab:nth-child(${tab === 'chat' ? 1 : tab === 'help' ? 2 : 3})`).classList.add('active');
+let history = [];
+let histIdx = -1;
+let loading = false;
+
+// DOM
+const chatEl = document.getElementById('chat');
+const inputEl = document.getElementById('msg-input');
+const sendBtn = document.getElementById('send-btn');
+const autoListEl = document.getElementById('auto-list');
+const helpPanel = document.getElementById('help-panel');
+const statusDot = document.getElementById('status-dot');
+
+// --- Send ---
+async function send() {
+  if (loading) return;
+  const text = inputEl.value.trim();
+  if (!text) return;
+  inputEl.value = '';
+  histIdx = -1;
+  history.unshift(text);
+  if (history.length > 50) history.pop();
+
+  addMsg('user', text);
+  setLoading(true);
+
+  try {
+    const { tool, args } = parseCmd(text);
+    const result = await execTool(tool, args);
+    displayResult(tool, result);
+  } catch (err) {
+    addMsg('system', 'Error: ' + err.message);
+  } finally {
+    setLoading(false);
+  }
 }
 
-// Autocomplete
+// --- Parse command ---
+function parseCmd(text) {
+  const parts = text.match(/(?:[^\s"]+|"[^"]*")+/g) || [];
+  const cmd = parts[0]?.replace('/', '').trim() || 'unknown';
+  const args = {};
+  const pos = [];
+
+  for (let i = 1; i < parts.length; i++) {
+    const p = parts[i];
+    if (p.startsWith('--')) {
+      const rest = p.slice(2);
+      const ei = rest.indexOf('=');
+      if (ei !== -1) {
+        args[rest.slice(0, ei).trim()] = rest.slice(ei + 1).replace(/^"|"$/g, '').trim();
+      } else {
+        const nv = parts[i + 1];
+        if (nv && !nv.startsWith('--')) {
+          args[rest.trim()] = nv.replace(/^"|"$/g, '').trim();
+          i++;
+        } else {
+          args[rest.trim()] = 'true';
+        }
+      }
+    } else {
+      pos.push(p.replace(/^"|"$/g, ''));
+    }
+  }
+
+  if (pos.length) args.message = pos.join(' ');
+
+  return { tool: cmd, args };
+}
+
+// --- Execute via API ---
+async function execTool(tool, args) {
+  let nArgs = { ...args };
+  if (tool === 'compare' && nArgs.message) {
+    const p = nArgs.message.split('|');
+    nArgs = { item1: (p[0]||'').trim(), item2: (p[1]||'').trim() };
+  } else if (nArgs.message !== undefined) {
+    const mp = PARAM_MAP[tool];
+    if (mp) { nArgs[mp] = nArgs.message; delete nArgs.message; }
+  }
+  const r = await fetch(API, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ tool, args: nArgs }),
+  });
+  if (!r.ok) {
+    const e = await r.json();
+    throw new Error(e.error || 'Request failed');
+  }
+  const d = await r.json();
+  return d.result;
+}
+
+// --- Display result ---
+function displayResult(tool, result) {
+  let text = '';
+  if (typeof result === 'object' && result !== null) {
+    if (Array.isArray(result.content)) {
+      text = result.content.map(c => c.text || '').join('\n');
+    } else if (result.text) {
+      text = result.text;
+    } else {
+      text = JSON.stringify(result);
+    }
+  } else {
+    text = String(result || '');
+  }
+
+  if (tool === 'council' || tool === 'compare' || tool === 'ask_all_ais') {
+    displayCouncil(text);
+  } else {
+    addMsg('ai', text);
+  }
+}
+
+// --- Display council/compare results ---
+function displayCouncil(text) {
+  const { providers, aggregate } = parseCouncil(text);
+
+  // Provider cards
+  if (Object.keys(providers).length > 0) {
+    const cardsEl = document.createElement('div');
+    cardsEl.className = 'provider-cards';
+
+    for (const [name, data] of Object.entries(providers)) {
+      const card = document.createElement('div');
+      card.className = 'provider-card' + (data.error ? ' error' : '');
+
+      const short = data.text?.slice(0, 200) || data.error || '';
+      const isLong = (data.text?.length || 0) > 200;
+
+      card.innerHTML = `
+        <div class="provider-card-header" onclick="toggleCard(this)" aria-expanded="false" role="button" tabindex="0" aria-label="${name} provider result">
+          <span class="provider-name">${name}</span>
+          <span class="provider-status">${data.error ? '✕ error' : '✓ ' + short.slice(0,40) + (short.length > 40 ? '…' : '')}</span>
+          <span class="provider-toggle" aria-hidden="true">▾</span>
+        </div>
+        ${isLong ? `<div class="provider-card-body">${escHtml(data.text || data.error)}</div>` : ''}
+      `;
+      cardsEl.appendChild(card);
+    }
+    chatEl.appendChild(cardsEl);
+  }
+
+  // Aggregate
+  if (aggregate) {
+    const agg = document.createElement('div');
+    agg.className = 'aggregate';
+    agg.innerHTML = `<div class="aggregate-title">Summary</div><div class="aggregate-content">${escHtml(aggregate)}</div>`;
+    chatEl.appendChild(agg);
+  }
+
+  scrollToBottom();
+}
+
+function parseCouncil(text) {
+  const result = { providers: {}, aggregate: '' };
+  if (typeof text !== 'string') text = String(text || '');
+  const lines = text.split('\n');
+
+  let cur = null, buf = [];
+  const isAgg = l => l.includes('─── AGGREGATE') || l.includes('## Aggregate') || l.includes('SYNTHESIS') || l.includes('### Summary') || l.includes('**Kesimpulan');
+
+  for (const l of lines) {
+    const m = l.match(/^##?\s*\*\*(.+?)\*\*/i) || l.match(/^##?\s+(\w+)/i);
+    if (m) {
+      if (cur) result.providers[cur] = { text: buf.join('\n').trim() };
+      cur = m[1] || m[2];
+      if (isAgg(l)) { cur = '__agg__'; }
+      buf = [];
+    } else if (isAgg(l)) {
+      if (cur && cur !== '__agg__') { result.providers[cur] = { text: buf.join('\n').trim() }; }
+      cur = '__agg__'; buf = [];
+    } else {
+      buf.push(l);
+    }
+  }
+  if (cur) {
+    if (cur === '__agg__') result.aggregate = buf.join('\n').trim();
+    else result.providers[cur] = { text: buf.join('\n').trim() };
+  }
+  if (!Object.keys(result.providers).length) result.providers['Response'] = { text };
+  return result;
+}
+
+// --- Toggle card ---
+function toggleCard(el) {
+  const card = el.closest('.provider-card');
+  const isOpen = card.classList.contains('open');
+  card.classList.toggle('open');
+  el.setAttribute('aria-expanded', !isOpen);
+}
+
+// --- Add message ---
+function addMsg(type, text) {
+  const div = document.createElement('div');
+  div.className = 'msg ' + type;
+  div.innerHTML = `<div class="msg-bubble">${escHtml(text)}</div>`;
+  chatEl.appendChild(div);
+  scrollToBottom();
+}
+
+// --- Helpers ---
+function setLoading(on) {
+  loading = on;
+  sendBtn.disabled = on;
+  statusDot.classList.toggle('loading', on);
+  if (on) {
+    const row = document.createElement('div');
+    row.className = 'msg system';
+    row.id = 'loading-msg';
+    row.innerHTML = '<div class="msg-bubble"><div class="loading-row"><div class="spinner"></div><span>Processing across providers…</span></div></div>';
+    chatEl.appendChild(row);
+    scrollToBottom();
+  } else {
+    const l = document.getElementById('loading-msg');
+    if (l) l.remove();
+  }
+}
+
+function scrollToBottom() {
+  chatEl.scrollTop = chatEl.scrollHeight;
+}
+
+function escHtml(t) {
+  if (!t) return '';
+  const d = document.createElement('div');
+  d.textContent = t;
+  return d.innerHTML.replace(/\n/g, '<br>');
+}
+
+// --- Autocomplete ---
+let autoIdx = -1;
+
 function handleInput(el) {
-    const text = el.value;
-    const cursorPos = el.selectionStart;
-    const textBeforeCursor = text.substring(0, cursorPos);
-    
-    // Check for / at start or after space
-    const match = textBeforeCursor.match(/(?:^|\s)\/(\w*)$/);
-    const ac = document.getElementById('autocomplete');
-    
-    if (match) {
-        const prefix = match[1].toLowerCase();
-        const matches = Object.entries(commands)
-            .filter(([cmd]) => cmd.startsWith(prefix))
-            .slice(0, 8);
-        
-        if (matches.length > 0) {
-            ac.innerHTML = matches.map(([cmd, info]) => `
-                <div class="autocomplete-item" onclick="insertCommand('${cmd}')">
-                    <div class="cmd">/${cmd}</div>
-                    <div class="desc">${info.desc}</div>
-                </div>
-            `).join('');
-            ac.classList.add('show');
-        } else {
-            ac.classList.remove('show');
-        }
+  const pos = el.selectionStart;
+  const before = el.value.slice(0, pos);
+  const m = before.match(/(?:^|\s)\/(\w*)$/);
+  const list = autoListEl;
+
+  if (m) {
+    const pre = m[1].toLowerCase();
+    const hits = CMDS.filter(c => c.c.startsWith(pre)).slice(0, 8);
+    if (hits.length) {
+      list.innerHTML = hits.map((h, i) => `
+        <div class="auto-item${i===0?' active':''}" data-cmd="${h.c}" role="option">
+          <span class="cmd">/${h.c}</span>
+          <span class="desc">${h.d}</span>
+        </div>`).join('');
+      list.classList.add('show');
+      autoIdx = 0;
+    } else { list.classList.remove('show'); autoIdx = -1; }
+  } else { list.classList.remove('show'); autoIdx = -1; }
+
+  // Auto-resize
+  el.style.height = 'auto';
+  el.style.height = Math.min(el.scrollHeight, 160) + 'px';
+}
+
+function handleKey(e) {
+  const list = autoListEl;
+  const items = list.querySelectorAll('.auto-item');
+
+  if (e.key === 'Enter' && !e.shiftKey) {
+    if (list.classList.contains('show') && autoIdx >= 0) {
+      e.preventDefault();
+      insertCmd(items[autoIdx].dataset.cmd);
+      return;
+    }
+    e.preventDefault();
+    send();
+  } else if (e.key === 'ArrowUp') {
+    if (list.classList.contains('show')) {
+      e.preventDefault();
+      autoIdx = Math.max(0, autoIdx - 1);
+      updateAutoActive(items);
     } else {
-        ac.classList.remove('show');
+      // Recall history
+      if (histIdx < history.length - 1) {
+        histIdx++;
+        inputEl.value = history[histIdx];
+      }
     }
-}
-
-function insertCommand(cmd) {
-    const input = document.getElementById('command-input');
-    const text = input.value;
-    const cursorPos = input.selectionStart;
-    const textBeforeCursor = text.substring(0, cursorPos);
-    const textAfterCursor = text.substring(cursorPos);
-    
-    const newTextBefore = textBeforeCursor.replace(/\/\w*$/, `/${cmd} `);
-    input.value = newTextBefore + textAfterCursor;
-    input.focus();
-    document.getElementById('autocomplete').classList.remove('show');
-}
-
-// Handle Enter
-function handleKeyDown(e) {
-    if (e.key === 'Enter' && !e.shiftKey) {
-        e.preventDefault();
-        sendCommand();
+  } else if (e.key === 'ArrowDown') {
+    if (list.classList.contains('show')) {
+      e.preventDefault();
+      autoIdx = Math.min(items.length - 1, autoIdx + 1);
+      updateAutoActive(items);
     }
-    if (e.key === 'Escape') {
-        document.getElementById('autocomplete').classList.remove('show');
-    }
+  } else if (e.key === 'Escape') {
+    list.classList.remove('show');
+    autoIdx = -1;
+  } else if (e.key === 'Tab' && list.classList.contains('show')) {
+    e.preventDefault();
+    insertCmd(items[autoIdx >= 0 ? autoIdx : 0].dataset.cmd);
+  }
 }
 
-// Send command
-async function sendCommand() {
-    if (isLoading) return;
-    
-    const input = document.getElementById('command-input');
-    const text = input.value.trim();
-    if (!text) return;
-    
-    // Add user message
-    addMessage('user', text);
-    input.value = '';
-    
-    // Parse command
-    const parsed = parseCommand(text);
-    addLoading();
-    
-    try {
-        const result = await executeTool(parsed.tool, parsed.args);
-        removeLoading();
-        displayResult(parsed.tool, result, parsed.args);
-    } catch (err) {
-        removeLoading();
-        addMessage('system', `Error: ${err.message}`);
-    }
+function updateAutoActive(items) {
+  items.forEach((it, i) => it.classList.toggle('active', i === autoIdx));
 }
 
-// Parse command
-function parseCommand(text) {
-    const parts = text.match(/(?:[^\s"]+|"[^"]*")+/g) || [];
-    const cmd = parts[0]?.replace('/', '').trim() || 'unknown';
-    
-    const args = {};
-    const positional = []; // collect non-flag args as message
-    
-    for (let i = 1; i < parts.length; i++) {
-        const part = parts[i];
-        if (part.startsWith('--')) {
-            // Flag: --key=value or --key
-            const rest = part.substring(2);
-            const eqIdx = rest.indexOf('=');
-            if (eqIdx !== -1) {
-                args[rest.substring(0, eqIdx).trim()] = rest.substring(eqIdx + 1).replace(/^"|"$/g, '').trim();
-            } else {
-                // Next part is the value (unless it starts with --)
-                const next = parts[i + 1];
-                if (next && !next.startsWith('--')) {
-                    args[rest.trim()] = next.replace(/^"|"$/g, '').trim();
-                    i++; // skip next
-                } else {
-                    args[rest.trim()] = 'true';
-                }
-            }
-        } else {
-            positional.push(part.replace(/^"|"$/g, ''));
-        }
-    }
-    
-    // Message = all positional args joined (strip trailing --mode etc.)
-    if (positional.length > 0) {
-        args.message = positional.join(' ');
-    }
-    
-    return { tool: cmd, args };
+function insertCmd(cmd) {
+  const pos = inputEl.selectionStart;
+  const before = inputEl.value.slice(0, pos);
+  const after = inputEl.value.slice(pos);
+  const nb = before.replace(/\/\w*$/, `/${cmd} `);
+  inputEl.value = nb + after;
+  inputEl.selectionStart = inputEl.selectionEnd = nb.length;
+  autoListEl.classList.remove('show');
+  autoIdx = -1;
+  inputEl.focus();
 }
 
-// Execute via API
-async function executeTool(tool, args) {
-    const response = await fetch(API_BASE + '/execute', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tool, args })
-    });
-    
-    if (!response.ok) {
-        const err = await response.json();
-        throw new Error(err.error || 'Request failed');
-    }
-    
-    const data = await response.json();
-    return data.result;
+// Click on autocomplete item
+autoListEl.addEventListener('click', e => {
+  const it = e.target.closest('.auto-item');
+  if (it) { insertCmd(it.dataset.cmd); }
+});
+
+// --- Help panel ---
+function toggleHelp() {
+  const p = helpPanel;
+  const is = p.classList.toggle('show');
+  p.setAttribute('aria-hidden', !is);
+  if (is) inputEl.focus();
 }
 
-// Add message to chat
-function addMessage(type, content, sender = '') {
-    const container = document.getElementById('chat-messages');
-    const time = new Date().toLocaleTimeString();
-    
-    const div = document.createElement('div');
-    div.className = `message ${type}`;
-    
-    const header = type !== 'system' ? `
-        <div class="message-header">
-            <span class="message-sender">${type === 'user' ? 'You' : sender || 'Proxima'}</span>
-            <span class="message-time">${time}</span>
-        </div>
-    ` : '';
-    
-    div.innerHTML = header + `<div class="message-content">${escapeHtml(content)}</div>`;
-    container.appendChild(div);
-    container.scrollTop = container.scrollHeight;
-    
-    chatHistory.push({ type, content, sender, time });
-}
+// Close on overlay click
+helpPanel.addEventListener('click', e => {
+  if (e.target === helpPanel) toggleHelp();
+});
 
-// Display result
-function displayResult(tool, result, args) {
-    const container = document.getElementById('chat-messages');
-    
-    // Normalize result — MCP returns { content: [{ type: "text", text: "..." }] }
-    let text = result;
-    if (typeof result === 'object' && result !== null) {
-        if (Array.isArray(result.content)) {
-            text = result.content.map(c => c.text || '').join('\n');
-        } else if (result.text) {
-            text = result.text;
-        } else {
-            text = JSON.stringify(result);
-        }
-    }
-    
-    if (tool === 'council' || tool === 'compare' || tool === 'ask_all_ais') {
-        displayMultiProviderResult(tool, text, args);
-    } else {
-        addMessage('ai', text, tool.toUpperCase());
-    }
-}
-
-// Display multi-provider result
-function displayMultiProviderResult(tool, result, args) {
-    const container = document.getElementById('chat-messages');
-    
-    // Parse markdown-style result
-    const sections = parseMarkdownResult(result);
-    
-    const div = document.createElement('div');
-    div.className = 'message ai';
-    
-    let html = `<div class="message-header">
-        <span class="message-sender">${tool.toUpperCase()}</span>
-        <span class="message-time">${new Date().toLocaleTimeString()}</span>
-    </div>`;
-    
-    // Show per-provider results
-    for (const [provider, content] of Object.entries(sections.providers || {})) {
-        const status = content.error ? 'error' : 'success';
-        html += `
-            <div class="provider-result ${status}">
-                <div class="provider-name">${status === 'success' ? '✅' : '❌'} ${provider.toUpperCase()}</div>
-                <div class="content">${escapeHtml(content.text || content.error)}</div>
-            </div>
-        `;
-    }
-    
-    // Aggregate section
-    if (sections.aggregate) {
-        html += `
-            <div class="aggregate-section">
-                <h3>📋 Aggregate Summary</h3>
-                <div class="content">${escapeHtml(sections.aggregate)}</div>
-            </div>
-        `;
-    }
-    
-    div.innerHTML = html;
-    container.appendChild(div);
-    container.scrollTop = container.scrollHeight;
-}
-
-// Parse markdown result into sections
-function parseMarkdownResult(text) {
-    if (typeof text !== 'string') { text = String(text || ''); }
-    const result = { providers: {}, aggregate: '' };
-    
-    // Split by provider headers (## PROVIDER)
-    const providerPattern = /##?\s*\*\*(.+?)\*\*|##\s+(\w+)/gi;
-    const lines = text.split('\n');
-    
-    let currentProvider = null;
-    let currentContent = [];
-    
-    for (const line of lines) {
-        const providerMatch = line.match(/##?\s*\*\*(.+?)\*\*|##\s+(\w+)/i);
-        if (providerMatch) {
-            // Save previous
-            if (currentProvider) {
-                result.providers[currentProvider] = {
-                    text: currentContent.join('\n').trim()
-                };
-            }
-            currentProvider = providerMatch[1] || providerMatch[2];
-            currentContent = [];
-        } else if (line.includes('─── AGGREGATE') || line.includes('## Aggregate') || line.includes('SYNTHESIS')) {
-            if (currentProvider) {
-                result.providers[currentProvider] = { text: currentContent.join('\n').trim() };
-                currentContent = [];
-                currentProvider = 'AGGREGATE';
-            }
-        } else {
-            currentContent.push(line);
-        }
-    }
-    
-    // Last one
-    if (currentProvider && currentContent.length) {
-        if (currentProvider === 'AGGREGATE') {
-            result.aggregate = currentContent.join('\n').trim();
-        } else {
-            result.providers[currentProvider] = { text: currentContent.join('\n').trim() };
-        }
-    }
-    
-    // If no providers found, treat as single block
-    if (Object.keys(result.providers).length === 0) {
-        result.providers['Response'] = { text: text };
-    }
-    
-    return result;
-}
-
-// Loading state
-function addLoading() {
-    isLoading = true;
-    const container = document.getElementById('chat-messages');
-    const div = document.createElement('div');
-    div.id = 'loading-indicator';
-    div.className = 'message system';
-    div.innerHTML = `
-        <div class="loading">
-            <div class="spinner"></div>
-            <span>Processing request across providers...</span>
-        </div>
-    `;
-    container.appendChild(div);
-    container.scrollTop = container.scrollHeight;
-    document.querySelector('.send-btn').disabled = true;
-}
-
-function removeLoading() {
-    isLoading = false;
-    const el = document.getElementById('loading-indicator');
-    if (el) el.remove();
-    document.querySelector('.send-btn').disabled = false;
-}
-
-// Escape HTML
-function escapeHtml(text) {
-    if (!text) return '';
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML.replace(/\n/g, '<br>');
-}
-
-// Toggle setting
-function toggleSetting(el) {
-    el.classList.toggle('active');
-}
-
-// Load settings
-async function loadSettings() {
-    try {
-        const response = await fetch(API_BASE + '/providers');
-        const data = await response.json();
-        renderProviderToggles(data.providers || []);
-    } catch (e) {
-        // Use defaults
-        renderProviderToggles([
-            'perplexity', 'chatgpt', 'gemini', 'minimax', 'qwen', 'zai', 'deepseek'
-        ]);
-    }
-}
-
-function renderProviderToggles(providers) {
-    const container = document.getElementById('provider-toggles');
-    const all = ['perplexity', 'chatgpt', 'claude', 'gemini', 'kimi', 'minimax', 'mimo', 'qwen', 'zai', 'deepseek'];
-    
-    container.innerHTML = all.map(p => `
-        <div class="setting-item">
-            <span class="setting-label">${p.charAt(0).toUpperCase() + p.slice(1)}</span>
-            <button class="toggle ${providers.includes(p) ? 'active' : ''}" 
-                    onclick="toggleProvider('${p}', this)"></button>
-        </div>
-    `).join('');
-}
-
-async function toggleProvider(name, el) {
-    el.classList.toggle('active');
-    // TODO: Send to server to update enabled providers
-}
+// Close on Escape
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && helpPanel.classList.contains('show')) toggleHelp();
+});
 
 // Init
-document.addEventListener('DOMContentLoaded', () => {
-    loadSettings();
-    
-    // Auto-refresh miner status
-    // setInterval(fetchMinerStatus, 30000);
-});
+inputEl.focus();
 </script>
 </body>
 </html>

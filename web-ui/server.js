@@ -18,6 +18,18 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
 // MCP TCP Daemon port (already running on 19224)
 const MCP_PORT = 19224;
 
+// MIME types
+const MIME = {
+    '.html': 'text/html',
+    '.js': 'application/javascript',
+    '.css': 'text/css',
+    '.json': 'application/json',
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.svg': 'image/svg+xml',
+    '.ico': 'image/x-icon'
+};
+
 // MCP uses different parameter names than what the web UI sends.
 // Map web-ui "message" to the correct tool parameter.
 const PARAM_MAP = {
@@ -227,9 +239,6 @@ server.listen(PORT, '0.0.0.0', () => {
     console.log('║  http://0.0.0.0:' + PORT + '                               ║');
     console.log('╚════════════════════════════════════════════════╝');
     console.log('');
-    console.log('Tabs:');
-    console.log('  💬 Chat  — Slash commands: /council, /compare, /ask_all_ais');
-    console.log('  📖 Help  — All available commands documented');
-    console.log('  ⚙️  Settings — Provider toggles & config');
+    console.log('  Minimal UI — type a message or / for commands');
     console.log('');
 });
