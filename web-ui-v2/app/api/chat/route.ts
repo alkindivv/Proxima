@@ -53,6 +53,43 @@ interface MCPResult {
   [key: string]: unknown;
 }
 
+function normalizeMCPText(text: string): string {
+  const trimmed = text.trim();
+  if (!trimmed) return '';
+
+  // Some Proxima MCP tools return a structured JSON object as a text block,
+  // e.g. smart_query → { success, provider, response, attempts, timestamp }.
+  // The chat UI should render the human answer, not the transport envelope.
+  if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+    try {
+      const parsed = JSON.parse(trimmed) as unknown;
+
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        const obj = parsed as Record<string, unknown>;
+
+        if (typeof obj.response === 'string') return obj.response.trim();
+        if (typeof obj.answer === 'string') return obj.answer.trim();
+        if (typeof obj.result === 'string') return obj.result.trim();
+        if (typeof obj.text === 'string') return obj.text.trim();
+        if (typeof obj.message === 'string') return obj.message.trim();
+        if (typeof obj.error === 'string') return `Error: ${obj.error}`;
+
+        if (typeof obj.review === 'string') {
+          const meta = [
+            typeof obj.filePath === 'string' ? `**File:** ${obj.filePath}` : null,
+            typeof obj.provider === 'string' ? `**Provider:** ${obj.provider}` : null,
+          ].filter(Boolean).join('\n');
+          return meta ? `${meta}\n\n${obj.review}` : obj.review.trim();
+        }
+      }
+    } catch {
+      // Not JSON; render as-is.
+    }
+  }
+
+  return text;
+}
+
 function executeMCPTool(tool: string, args: Record<string, unknown>): Promise<MCPResult> {
   return new Promise((resolve, reject) => {
     const client = createConnection({ port: MCP_PORT, host: MCP_HOST }, () => {
@@ -157,10 +194,12 @@ export async function POST(req: NextRequest) {
     const result = await executeMCPTool(tool, normalizedArgs);
 
     // Extract text from MCP content blocks
-    const text = (result.content ?? [])
-      .filter((c) => c.type === 'text' && c.text)
-      .map((c) => c.text)
-      .join('\n');
+    const text = normalizeMCPText(
+      (result.content ?? [])
+        .filter((c) => c.type === 'text' && c.text)
+        .map((c) => c.text)
+        .join('\n'),
+    );
 
     return Response.json({
       success: true,
